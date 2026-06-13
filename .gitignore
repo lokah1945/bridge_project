@@ -1,0 +1,11 @@
+.env
+sessions/
+browser_sessions/
+__pycache__/
+*.pyc
+model.json
+node_modules/
+.DS_Store
+.cache/
+.local/
+.git/

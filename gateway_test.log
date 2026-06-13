@@ -1,0 +1,6 @@
+[Engine] Browser started and manual stealth applied.
+INFO:     127.0.0.1:38320 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38322 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38332 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38334 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38348 - "POST /v1/chat/completions HTTP/1.1" 200 OK

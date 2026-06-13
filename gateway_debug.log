@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/home/user/gateway.py", line 2, in <module>
+    from fastapi import FastAPI, Request, HTTPException
+ModuleNotFoundError: No module named 'fastapi'
