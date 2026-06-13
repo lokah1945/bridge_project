@@ -1,0 +1,890 @@
+================================================================================
+MASTER PROMPT — REBUILD BRIDGE-CLIENT (PYTHON, END-TO-END, KOMPREHENSIF)
+Proyek: bridge_project (https://github.com/lokah1945/bridge_project)
+================================================================================
+
+Dokumen ini adalah SATU-SATUNYA SUMBER KEBENARAN (single source of truth) untuk
+membangun ulang bridge-client dari nol. Dokumen ini merangkum SELURUH histori
+percakapan sebelumnya (yang berbelit-belit dan akhirnya gagal mencapai target),
+mengekstrak keputusan arsitektur final yang SUDAH DISEPAKATI, daftar kesalahan
+yang TIDAK BOLEH diulang, serta spesifikasi teknis lengkap per modul.
+
+Jika ada instruksi lain (di percakapan sebelumnya, di komentar kode lama, atau
+di README lama) yang BERTENTANGAN dengan dokumen ini — dokumen ini yang menang.
+Jangan mengusulkan ulang arsitektur yang sudah ditolak (lihat Bagian 4 & 18).
+
+
+================================================================================
+BAGIAN 0 — PERAN & PRINSIP KERJA (WAJIB DIPATUHI)
+================================================================================
+
+Anda bertindak sebagai Principal Automation Engineer / SRE yang bekerja
+berbasis BUKTI, bukan klaim.
+
+0.1 Aturan Anti-Halusinasi
+- Jangan pernah menyatakan "selesai", "100% berhasil", "production ready",
+  "sudah berjalan", atau sejenisnya TANPA bukti eksekusi nyata (log, output
+  command, isi file).
+- Format pelaporan untuk setiap klaim penting:
+    CLAIM   : <pernyataan>
+    EVIDENCE: <log / output / isi file>
+    VERDICT : PASS / FAIL / BLOCKED
+- Jika sesuatu belum dijalankan -> tulis "NOT EXECUTED".
+- Jika tidak yakin -> tulis "UNVERIFIED". Jangan menebak jumlah model, jumlah
+  fitur, atau hasil scraping. SEMUA jumlah model WAJIB berasal dari hasil
+  scraping nyata terhadap model.json, bukan asumsi/seed/contoh.
+
+0.2 Loop Eksekusi
+  BUILD -> RUN -> OBSERVE LOG -> FIX -> RE-RUN -> VERIFY -> ULANGI
+  Tidak ada batas iterasi. Berhenti hanya jika:
+    a) Seluruh checklist Bagian 20 (Definition of Done) PASS dengan bukti, ATAU
+    b) Ditemukan BLOCKER nyata (disertai error message asli + langkah yang
+       sudah dicoba + langkah konkret yang dibutuhkan dari user).
+
+0.3 No Placeholder
+  Dilarang menyisakan TODO/FIXME/dummy/mock/placeholder/"contoh" pada kode
+  final yang diserahkan sebagai hasil. Jika sebuah fitur provider belum bisa
+  diverifikasi karena selector berubah, tulis fallback yang ROBUST (multi
+  selector + try/except + logging jelas), bukan kode mati.
+
+
+================================================================================
+BAGIAN 1 — KONTEKS PROYEK
+================================================================================
+
+Bridge-Project adalah gateway otomatisasi yang mengubah Web UI dari beberapa
+provider AI (Arena.ai, Qwen/chat.qwen.ai, DeepSeek/chat.deepseek.com) menjadi
+SATU API lokal yang kompatibel dengan format OpenAI
+(/v1/models, /v1/chat/completions), sehingga bisa dipakai oleh aplikasi lain
+di jaringan lokal (Open WebUI, LibreChat, Cursor, dsb) seolah-olah memanggil
+endpoint OpenAI biasa.
+
+Arsitektur Hub-and-Spoke terdiri dari 2 komponen:
+
+  1. bridge-server  -> "Session Hub". Windows, Node.js, browser headfull yang
+     sudah login manual ke akun (Google, Arena, Qwen). SUDAH BERJALAN & SUDAH
+     LOGIN. Lihat Bagian 3.
+
+  2. bridge-client  -> "Automation Engine". Linux, Python/FastAPI. INI YANG
+     AKAN DIBANGUN ULANG SECARA MENYELURUH di prompt ini.
+
+
+================================================================================
+BAGIAN 2 — TUJUAN AKHIR (PRIMARY OBJECTIVE)
+================================================================================
+
+Bangun ulang bridge-client (Python) dari nol, secara end-to-end, sehingga:
+
+  1. Mengambil session (cookies, user-agent, headers) dari bridge-server yang
+     sudah aktif, mengenkripsinya (AES-256/Fernet), dan menyimpannya lokal.
+  2. Menggunakan session tersebut untuk menjalankan browser Playwright HEADLESS
+     miliknya sendiri, lalu MELAKUKAN OTOMASI DOM langsung ke arena.ai,
+     chat.qwen.ai, dan chat.deepseek.com (client = satu-satunya eksekutor).
+  3. Melakukan DYNAMIC MODEL DISCOVERY nyata (bukan list statis/seed) untuk
+     ketiga provider, termasuk:
+       - Arena: 4 varian modality URL (/text, /search, /image, /code /direct)
+       - Qwen : daftar "Primary" + daftar "Expand More" (tersembunyi)
+       - DeepSeek: dropdown model utama
+     Hasil discovery disimpan di model.json, di-refresh otomatis setiap 60
+     menit via background task, dan runtime /v1/models membaca dari file ini
+     (instan, tidak scraping setiap request).
+  4. Mengekspos API OpenAI-compatible: GET /v1/models, POST /v1/chat/completions
+     (mendukung field extra_params untuk kontrol fitur spesifik provider — lihat
+     Bagian 15).
+  5. 100% stateless / zero footprint: tidak meninggalkan jejak history di akun
+     provider (gunakan endpoint anonim/temporary + clear cookies setelah tiap
+     eksekusi).
+  6. Tervalidasi dengan test_all_models.py yang mengirim prompt "hallo" ke
+     SETIAP model yang TERDETEKSI SECARA NYATA dan melaporkan matriks
+     PASS/FAIL beserta isi balasan.
+
+
+================================================================================
+BAGIAN 3 — STATUS SAAT INI: BRIDGE-SERVER (SUDAH JALAN — JANGAN DIBANGUN ULANG)
+================================================================================
+
+bridge-server SUDAH BERJALAN dan TIDAK PERLU dibangun ulang. Perlakukan sebagai
+black-box service yang sudah benar. Jangan mengubah kode server, jangan
+menambahkan endpoint eksekusi (/proxy-chat atau sejenis) di sisi server — lihat
+larangan di Bagian 4 & 18.
+
+3.1 Spesifikasi server (referensi, untuk dipahami kontraknya saja)
+  - Platform : Windows Server, headfull Chrome.
+  - Stack    : Node.js + Express + playwright-extra + puppeteer-extra-plugin-
+               stealth + manual CDP overrides (navigator.webdriver, languages,
+               window.chrome, sec-ch-ua headers) + chromium.launchPersistentContext
+               (session disimpan permanen per-profile di disk).
+  - Multi-profile: saat dijalankan (npm start) ada menu CLI:
+       (1) Start Server (pilih profile jika >1)
+       (2) Add New Profile
+       (3) Delete Saved Profile
+  - Login manual dilakukan via endpoint /open (membuka URL di browser headfull
+    persistent agar user bisa login manual / selesaikan MFA / captcha).
+
+3.2 Endpoint yang TERSEDIA dan SUDAH AKTIF
+  - BRIDGE_SERVER_URL = http://host.zerotier.my.id:9877   (tunnel ZeroTier,
+    SUDAH AKTIF, SUDAH LOGIN ke Google, arena.ai, dan chat.qwen.ai)
+  - GET  /health
+        -> {"status": "online"}
+  - GET  /open?url=<url>
+        -> membuka <url> di browser headfull persistent (untuk login manual)
+  - GET  /get-session/:provider     (provider ∈ {arena, qwen, deepseek})
+        -> {
+             "cookies": [ ...array cookie object Playwright (name, value,
+                          domain, path, expires, httpOnly, secure, sameSite)... ],
+             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...",
+             "headers": { "Accept-Language": "en-US,en;q=0.9", ... }
+           }
+  - (Opsional, jika versi server di repo sudah memiliki ini)
+    GET /scan-models?provider=<arena|qwen|deepseek>
+        -> hasil scraping model & fitur menggunakan browser server yang SUDAH
+           login. Bridge-client BOLEH memakai endpoint ini sebagai CROSS-CHECK
+           tambahan, TAPI mekanisme discovery UTAMA tetap dijalankan oleh
+           client sendiri (lihat Bagian 4).
+
+3.3 Statelessness DeepSeek
+  Akun deepseek BELUM tentu sudah login di bridge-server pada saat ini
+  (riwayat percakapan menyebut Arena & Qwen sudah login). Jika
+  /get-session/deepseek mengembalikan cookies kosong, bridge-client harus tetap
+  berjalan untuk arena & qwen, dan melaporkan status DeepSeek sebagai
+  "NO_SESSION" di model.json (bukan error fatal yang mematikan seluruh server).
+
+
+================================================================================
+BAGIAN 4 — ARSITEKTUR FINAL (NON-NEGOTIABLE — JANGAN DIUBAH LAGI)
+================================================================================
+
+Ini adalah keputusan arsitektur TERAKHIR setelah beberapa kali bolak-balik di
+histori chat. JANGAN mengusulkan / mengimplementasikan ulang varian
+"Hub-and-Spoke Proxy" (di mana bridge-server yang menjalankan DOM automation
+via endpoint /proxy-chat dan client hanya jadi thin-wrapper). Varian itu SUDAH
+DITOLAK SECARA EKSPLISIT oleh pemilik proyek.
+
+Model yang BENAR ("Session-Provider / Executor-Client"):
+
+  bridge-server (Windows)
+      = Session Authority SAJA.
+      - Tugas: login manual sekali, jaga browser headfull tetap hidup/login,
+        sediakan cookies/headers via /get-session/:provider.
+      - TIDAK menjalankan prompt apa pun. TIDAK ada logic chat di server.
+      - Boleh dimatikan setelah client sinkron; hanya perlu dinyalakan lagi
+        saat client butuh re-sync (session expired/revoked).
+
+  bridge-client (Linux)  <-- INI YANG DIBANGUN
+      = Satu-satunya eksekutor.
+      - Sinkron sekali (atau saat expired) -> simpan terenkripsi lokal.
+      - Menjalankan Playwright headless miliknya sendiri, inject cookies dari
+        session yang disimpan, lalu OTOMASI DOM langsung ke
+        arena.ai / chat.qwen.ai / chat.deepseek.com.
+      - Expose API OpenAI-compatible ke jaringan lokal.
+
+  Siklus hidup:
+    [Server: login manual sekali] -> [Client: sync session -> simpan terenkripsi]
+       -> [Client: operasi mandiri, server boleh OFF]
+       -> [jika provider menolak session (401/403/redirect ke login)]
+       -> [Client: re-sync ke server (server harus ON sebentar)] -> lanjut.
+
+  Motto proyek: "Server login, client ambil, server boleh lupa (forget)."
+
+
+================================================================================
+BAGIAN 5 — TECH STACK & SETUP ENVIRONMENT
+================================================================================
+
+  - Python 3.10+
+  - FastAPI + "uvicorn[standard]"
+  - playwright (Python) — VANILLA, lihat larangan di Bagian 18 poin 1
+  - httpx (async client, untuk komunikasi ke BRIDGE_SERVER_URL)
+  - python-dotenv
+  - cryptography (Fernet, untuk enkripsi session lokal AES-256)
+
+  Setup di server produksi Linux (WAJIB dijalankan & diverifikasi, BUKAN di
+  sandbox kosong):
+      pip install -r requirements.txt
+      playwright install chromium
+      playwright install-deps      # memperbaiki error semacam
+                                    # "libnspr4.so: cannot open shared object file"
+
+  requirements.txt minimal:
+      fastapi
+      uvicorn[standard]
+      httpx
+      python-dotenv
+      cryptography
+      playwright
+
+
+================================================================================
+BAGIAN 6 — STRUKTUR DIREKTORI TARGET
+================================================================================
+
+bridge-client/
+├── client.py                 # FastAPI app (entrypoint)
+├── registry.py                # mapping bridge/<provider>/[<modality>/]<model>
+├── requirements.txt
+├── .env.example
+├── .env                       # dibuat user dari .env.example (di-gitignore)
+├── model.json                 # cache hasil discovery, auto-refresh 60 menit
+├── sessions/                  # auto-generated, *.bin terenkripsi per provider
+├── providers/
+│   ├── __init__.py
+│   ├── base.py                # BaseProvider (browser lifecycle + CDP stealth)
+│   ├── arena.py                # ArenaProvider (4 modality)
+│   ├── qwen.py                 # QwenProvider (Expand More, thinking, tools)
+│   └── deepseek.py             # DeepSeekProvider (expert/thinking/search)
+├── test_all_models.py          # validasi end-to-end "hallo" ke semua model
+├── how_to_use.md
+├── model.md
+└── README.md
+
+
+================================================================================
+BAGIAN 7 — KONFIGURASI (.env / .env.example)
+================================================================================
+
+.env.example:
+
+    BRIDGE_SERVER_URL=http://host.zerotier.my.id:9877
+    PORT=8000
+    ENCRYPTION_KEY=
+    SESSION_TTL_HOURS=24
+    MODEL_CACHE_REFRESH_MINUTES=60
+    BROWSER_HEADLESS=true
+
+Catatan:
+  - ENCRYPTION_KEY: jika kosong saat pertama kali jalan, generate otomatis
+    dengan Fernet.generate_key() dan SIMPAN ke .env (append), lalu pakai key
+    tersebut secara konsisten setiap restart (jangan generate ulang setiap
+    restart — nanti session lama tidak bisa di-decrypt).
+  - BRIDGE_SERVER_URL sudah AKTIF dan SUDAH LOGIN (lihat Bagian 3). Gunakan
+    nilai ini langsung untuk sinkronisasi awal, jangan minta user login ulang
+    kecuali server memang offline/expired.
+
+
+================================================================================
+BAGIAN 8 — providers/base.py (BaseProvider — Automation Core)
+================================================================================
+
+Tanggung jawab BaseProvider:
+  1. Menyimpan session_data (cookies, user_agent, headers).
+  2. Lazy-launch browser Playwright headless + context dengan cookies di-inject.
+  3. Menerapkan STEALTH MANUAL via CDP (lihat larangan playwright-extra/
+     playwright_stealth di Bagian 18 poin 1) — ini sudah pernah TERVALIDASI
+     bekerja di iterasi terakhir histori chat.
+  4. Method abstrak list_models(**kwargs) dan execute(model_id, prompt, params).
+  5. cleanup() — WAJIB dipanggil setelah setiap request (di blok finally pada
+     client.py) untuk menutup browser & menghindari memory/process leak.
+
+Referensi implementasi (titik awal yang sudah tervalidasi — sesuaikan/perkuat
+sesuai temuan discovery nyata, JANGAN dipersempit):
+
+----------------------------------------------------------------------
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+from playwright.async_api import async_playwright, Page, BrowserContext
+
+DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+class BaseProvider(ABC):
+    def __init__(self, session_data: Dict[str, Any]):
+        self.session_data = session_data or {}
+        self.cookies = self.session_data.get("cookies", [])
+        self.user_agent = self.session_data.get("user_agent", DEFAULT_UA)
+        self.playwright = None
+        self.browser = None
+        self.context: Optional[BrowserContext] = None
+
+    async def _setup_browser(self) -> Page:
+        if not self.browser:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+            self.context = await self.browser.new_context(user_agent=self.user_agent)
+            if self.cookies:
+                await self.context.add_cookies(self.cookies)
+
+        page = await self.context.new_page()
+
+        # Manual CDP Stealth (gantikan playwright-extra/playwright_stealth)
+        cdp = await page.context.new_cdp_session(page)
+        await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+            'source': '''
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
+                Object.defineProperty(window, 'chrome', {get: () => ({runtime: {}})});
+            '''
+        })
+        await cdp.send('Network.setExtraHTTPHeaders', {
+            'headers': {
+                'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+            }
+        })
+        return page
+
+    @abstractmethod
+    async def list_models(self, **kwargs) -> Any: ...
+
+    @abstractmethod
+    async def execute(self, model_id: str, prompt: str, params: Dict[str, Any]) -> str: ...
+
+    async def cleanup(self):
+        try:
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
+----------------------------------------------------------------------
+
+Catatan implementasi:
+  - Perhatikan `page.context.new_cdp_session(page)` (bukan `page.context()` —
+    di Python API, `context` adalah PROPERTY, bukan method seperti di Node.js;
+    versi sebelumnya di histori chat salah menulis `page.context()` yang akan
+    error di Python).
+  - Jika butuh user-agent lain per provider, override via konstruktor /
+    kwargs, jangan hardcode banyak versi base.py berbeda.
+
+
+================================================================================
+BAGIAN 9 — providers/arena.py (ArenaProvider)
+================================================================================
+
+  MODALITIES = {
+      "text":   "https://arena.ai/text/direct",
+      "search": "https://arena.ai/search/direct",
+      "image":  "https://arena.ai/image/direct",
+      "code":   "https://arena.ai/code/direct",
+  }
+
+  list_models(modality="text") -> List[str]
+    - goto(url, wait_until="networkidle")
+    - AGGRESSIVE discovery, JANGAN berhenti di selector pertama:
+        a) Cek semua elemen <select> -> ambil .options[].innerText
+        b) Cek semua trigger dengan teks "Model" -> klik -> tunggu ~0.5s ->
+           kumpulkan [role="option"], .model-item, .dropdown-item
+        c) Gabungkan & dedupe hasil (a)+(b) jadi satu set.
+    - PENTING: halaman Arena memiliki LEBIH DARI SATU elemen role="combobox"
+      (mode switcher: Battle/Agent/Direct/Side-by-Side, DAN model selector).
+      Pastikan logic HANYA menargetkan model selector (filter berdasarkan
+      posisi/visibility/label, bukan combobox pertama yang ditemukan). Verifikasi
+      ini dengan screenshot/HTML dump nyata sebelum finalisasi selector.
+    - Jalankan untuk SEMUA 4 modality (panggil 4x dengan modality berbeda dari
+      sisi client.py saat membangun model.json), simpan hasil per-modality.
+
+  execute(model_id, prompt, params) -> str
+    - modality = params.get("modality", "text") -> pilih URL dari MODALITIES
+    - goto(url, wait_until="networkidle")
+    - Pilih model: klik trigger "Model" -> klik opsi bertuliskan model_id;
+      fallback: select_option(label=model_id) jika elemen berupa <select> asli.
+    - fill('textarea', prompt); keyboard.press("Enter")
+    - wait_for_selector('.response-bubble, .chat-message-content', timeout=60000)
+    - ambil innerText dari elemen TERAKHIR yang match
+    - finally: await self.context.clear_cookies(); page.close()
+
+  Statelessness:
+    - Endpoint /direct sudah bersifat anonim/temporary by design — ini sudah
+      sesuai requirement "tanpa jejak history".
+    - extra_params.temporary_chat (bool, default true) — dokumentasikan saja
+      di model.md; behavior default sudah anonim via /direct.
+
+  Naming model: "bridge/arena/<modality>/<model_id>"
+
+
+================================================================================
+BAGIAN 10 — providers/qwen.py (QwenProvider)
+================================================================================
+
+  URL = "https://chat.qwen.ai/?temporary-chat=true"   <-- WAJIB, SELALU URL INI
+  (Konfirmasi eksplisit dari pemilik proyek: ini adalah default URL stateless
+  Qwen, jangan diganti ke URL lain.)
+
+  list_models() -> List[str]
+    - goto(URL, wait_until="networkidle")
+    - klik model selector: '.model-selector, [role="combobox"], text="Model"'
+    - **KUNCI UTAMA** (sumber kesalahan terbesar di histori sebelumnya — jumlah
+      model dilaporkan "1000% salah" karena bagian ini terlewat):
+      SETELAH dropdown terbuka, cari & klik tombol "Expand More" / "More" /
+      .expand-btn / .show-all (coba semua kandidat selector ini, klik yang
+      pertama VISIBLE). Ini akan memunculkan daftar model TAMBAHAN di luar
+      3 model "Primary" (qwen-max/plus/turbo).
+    - Setelah expand diklik, SCRAPE SEMUA opsi:
+        [role="option"], .model-option, .dropdown-item, li
+      filter teks dengan panjang < 100 karakter (hindari menangkap paragraf
+      besar), dedupe ke dalam set.
+    - Hasil akhir = gabungan model Primary + Expanded, TANPA batas jumlah
+      hardcoded.
+
+  execute(model_id, prompt, params) -> str
+    - goto(URL, wait_until="networkidle")
+    - Pilih model: klik selector -> jika model_id ada di expanded list, klik
+      "Expand More" dulu -> klik teks model_id.
+    - extra_params.thinking ∈ {"auto","thinking","fast"} (default "auto"):
+        jika != "auto" -> klik '.thinking-mode-dropdown' -> klik text=thinking
+    - extra_params.tools (bool, default true):
+        jika false -> klik '.tool-toggle-btn' untuk men-disable tools/web-search
+    - fill('textarea', prompt); keyboard.press("Enter")
+    - wait_for_selector('.chat-message-content', timeout=60000); ambil yang
+      terakhir
+    - finally: await self.context.clear_cookies(); page.close()
+
+  Naming model: "bridge/qwen/<model_id>"
+
+
+================================================================================
+BAGIAN 11 — providers/deepseek.py (DeepSeekProvider)
+================================================================================
+
+  URL = "https://chat.deepseek.com/"
+
+  list_models() -> List[str]
+    - goto(URL, wait_until="networkidle")
+    - klik model switcher: '.model-selector, [role="combobox"], text="Model"'
+    - scrape [role="option"], .model-option, .dropdown-item -> dedupe
+    - fallback jika hasil kosong: ["deepseek-v3", "deepseek-coder"] (gunakan
+      fallback HANYA sebagai pengaman agar API tidak kosong total; tandai di
+      model.json sebagai status "fallback" agar transparan, JANGAN diklaim
+      sebagai hasil discovery nyata)
+
+  execute(model_id, prompt, params) -> str
+    - goto(URL, wait_until="networkidle")
+    - extra_params.mode ∈ {"fast","expert"} (default "fast"):
+        jika "expert" -> klik '.mode-expert-toggle'
+    - extra_params.thinking (bool, default false):
+        jika true -> klik '.think-toggle'
+    - extra_params.search (bool, default false):
+        jika true -> klik '.search-toggle'
+    - Pilih model (klik switcher -> klik text=model_id)
+    - fill('textarea', prompt); keyboard.press("Enter")
+    - wait_for_selector('.ds-message', timeout=60000); ambil yang terakhir
+    - finally: await self.context.clear_cookies(); page.close()
+
+    Catatan: cek apakah DeepSeek Web UI memiliki opsi "temporary chat" /
+    "incognito" serupa Qwen. Jika ada (verifikasi via discovery nyata),
+    tambahkan dukungan extra_params.temporary_chat dan aktifkan secara default
+    untuk konsistensi zero-footprint dengan provider lain. Jika tidak ada,
+    cukup andalkan context.clear_cookies().
+
+  Naming model: "bridge/deepseek/<model_id>"
+
+
+================================================================================
+BAGIAN 12 — Selector & DOM: KEWAJIBAN VERIFIKASI ULANG
+================================================================================
+
+Semua selector di Bagian 9-11 berasal dari iterasi terakhir histori chat dan
+BELUM SEPENUHNYA diverifikasi terhadap DOM live (karena sandbox sebelumnya
+tidak punya akses browser/playwright yang berfungsi penuh — error
+"libnspr4.so"). Sebelum menyatakan provider mana pun "selesai":
+
+  1. Jalankan discovery NYATA di server produksi (yang sudah punya playwright +
+     chromium + deps terinstall, dan BRIDGE_SERVER_URL aktif untuk sesi).
+  2. Jika selector tidak menemukan elemen, lakukan dump DOM/screenshot untuk
+     menemukan selector yang benar saat ini (gunakan helper kecil seperti
+     discovery_probe.py di repo sebagai referensi, BUKAN dependensi runtime).
+  3. Update selector di providers/*.py dengan TEMUAN NYATA, bukan tebakan baru.
+  4. Selalu sediakan MINIMAL 2 strategi selector (selector spesifik + selector
+     umum/role-based) dengan try/except, agar perubahan DOM minor tidak
+     mematikan seluruh fitur.
+
+
+================================================================================
+BAGIAN 13 — registry.py
+================================================================================
+
+  - ProviderRegistry.register(name, ProviderClass)
+  - ProviderRegistry.get_provider_class(name) -> dynamic import
+    `providers.<name>`, cari subclass BaseProvider, register otomatis (hot-load,
+    tidak perlu restart untuk provider baru).
+  - Parsing target model:
+      "bridge/arena/<modality>/<model_id>"  -> provider="arena",
+                                                modality=<modality>,
+                                                model_id=<model_id>
+      "bridge/qwen/<model_id>"              -> provider="qwen", model_id=...
+      "bridge/deepseek/<model_id>"          -> provider="deepseek", model_id=...
+  - Format tidak valid -> HTTP 400 dengan pesan jelas
+    ("Use format bridge/<provider>/[<modality>/]<model>")
+  - Provider tidak dikenal -> HTTP 404
+    ("Provider '<name>' not found")
+
+
+================================================================================
+BAGIAN 14 — client.py (FastAPI Gateway)
+================================================================================
+
+14.1 SessionManager
+  - Direktori sessions/, file <provider>.bin (JSON terenkripsi Fernet).
+  - save_session(provider, data): tambahkan field "_saved_at" (ISO timestamp),
+    encrypt, tulis ke file.
+  - load_session(provider): decrypt, return dict atau None jika file tidak ada
+    / gagal decrypt.
+  - is_expired(session): bandingkan _saved_at + SESSION_TTL_HOURS dengan now().
+  - get_effective_session(provider):
+      1. session = load_session(provider)
+      2. jika session is None atau is_expired(session):
+           coba GET {BRIDGE_SERVER_URL}/get-session/{provider} (timeout wajar,
+           misal 15s)
+           - jika sukses (200) -> save_session(provider, response_json) ->
+             gunakan ini
+           - jika gagal (timeout/connection error/non-200):
+               - jika session lokal lama MASIH ADA (walau "expired" by TTL)
+                 -> log WARNING, tetap gunakan session lama (graceful
+                    degradation / mode offline) sesuai prinsip "sync once,
+                    use many"
+               - jika TIDAK ADA session lokal sama sekali -> raise error
+                 jelas: "AUTH_REQUIRED: bridge-server unreachable dan tidak
+                 ada session lokal untuk provider '<provider>'"
+      3. return session
+
+  - Auto-refresh saat eksekusi gagal karena auth: jika provider.execute()
+    melempar error yang mengindikasikan sesi tidak valid (redirect ke halaman
+    login, 401/403, atau elemen halaman menunjukkan "Sign in"), maka:
+      a. paksa re-sync (panggil get-session lagi ke BRIDGE_SERVER_URL, abaikan
+         cache lokal),
+      b. retry execute() SATU KALI dengan session baru,
+      c. jika tetap gagal -> kembalikan error informatif ke caller (jangan
+         retry tanpa batas).
+
+14.2 Model Cache System (model.json)
+  - Struktur file model.json (contoh skema):
+      {
+        "updated_at": "<ISO timestamp>",
+        "providers": {
+          "arena": {
+            "status": "ok" | "error" | "stale",
+            "last_error": null | "<pesan error>",
+            "models": {
+              "text":   ["<model>", ...],
+              "search": ["<model>", ...],
+              "image":  ["<model>", ...],
+              "code":   ["<model>", ...]
+            }
+          },
+          "qwen": {
+            "status": "...",
+            "last_error": null,
+            "models": ["<model>", ...]
+          },
+          "deepseek": {
+            "status": "...",
+            "last_error": null,
+            "models": ["<model>", ...]
+          }
+        }
+      }
+
+  - update_model_cache():
+      Untuk setiap provider:
+        - session = await get_effective_session(provider)
+        - instance = ProviderClass(session)
+        - try:
+            - arena: jalankan list_models(modality) untuk ke-4 modality, isi
+              dict per modality
+            - qwen/deepseek: jalankan list_models()
+            - status = "ok", last_error = None
+          except Exception as e:
+            - JANGAN timpa "models" yang sudah ada sebelumnya dengan data
+              kosong/seed. Pertahankan data lama (jika ada), set
+              status="stale"/"error", last_error=str(e).
+        - finally: await instance.cleanup()
+      Tulis seluruh model.json (atomic write: tulis ke file temp lalu rename).
+
+  - Startup FastAPI:
+      @app.on_event("startup")
+      async def startup():
+          await update_model_cache()              # WAJIB di-AWAIT, bukan
+                                                    # fire-and-forget, agar
+                                                    # model.json terisi NYATA
+                                                    # sebelum request pertama
+          asyncio.create_task(model_cache_loop())  # loop background
+
+      async def model_cache_loop():
+          while True:
+              await asyncio.sleep(MODEL_CACHE_REFRESH_MINUTES * 60)
+              await update_model_cache()
+
+14.3 Endpoint GET /v1/models
+  - Baca model.json, flatten ke format OpenAI:
+      {
+        "object": "list",
+        "data": [
+          {"id": "bridge/arena/text/<model>", "object": "model"},
+          {"id": "bridge/arena/search/<model>", "object": "model"},
+          ... (untuk semua modality arena)
+          {"id": "bridge/qwen/<model>", "object": "model"},
+          {"id": "bridge/deepseek/<model>", "object": "model"}
+        ]
+      }
+  - Response harus INSTAN (tidak melakukan scraping saat request ini datang).
+
+14.4 Endpoint POST /v1/chat/completions
+  Request body:
+      {
+        "model": "bridge/<provider>/[<modality>/]<model_id>",
+        "messages": [{"role": "user", "content": "..."}],
+        "extra_params": { ... lihat Bagian 15 ... },
+        "stream": false
+      }
+
+  Alur:
+    1. parsed = registry.parse(model)  -> provider_name, model_id, (modality)
+    2. session = await get_effective_session(provider_name)
+    3. provider = ProviderClass(session)
+    4. try:
+         prompt = messages[-1]["content"]
+         params = extra_params or {}
+         if provider_name == "arena": params["modality"] = modality
+         result_text = await provider.execute(model_id, prompt, params)
+       except <auth-error>:
+         ... (lihat 14.1 auto-refresh) ...
+       finally:
+         await provider.cleanup()
+    5. Bentuk response OpenAI:
+         non-stream:
+           {
+             "id": "chatcmpl-...",
+             "object": "chat.completion",
+             "model": "<model asli>",
+             "choices": [{
+               "index": 0,
+               "message": {"role": "assistant", "content": result_text},
+               "finish_reason": "stop"
+             }]
+           }
+         stream=true:
+           StreamingResponse yang mengirim result_text dalam beberapa chunk
+           SSE bergaya OpenAI (`data: {...}\n\n` ... `data: [DONE]\n\n`).
+
+14.5 Endpoint GET /health
+  -> {"status": "ok", "model_cache_updated_at": "<dari model.json>"}
+
+
+================================================================================
+BAGIAN 15 — FEATURE MATRIX (extra_params) — WAJIB didokumentasikan
+================================================================================
+
+  Provider  | Parameter        | Nilai                  | Efek
+  ----------|------------------|------------------------|----------------------------------
+  arena     | modality         | text/search/image/code | (di-set dari path model, bukan
+            |                  |                         | user — tetap dokumentasikan)
+  arena     | temporary_chat   | true (default)          | Zero-footprint (default sudah via /direct)
+  qwen      | thinking         | auto/thinking/fast      | Kontrol Chain-of-Thought reasoning
+  qwen      | tools            | true/false              | Aktifkan/disable web-search & plugin tools
+  deepseek  | mode             | fast/expert             | Latency vs deep reasoning
+  deepseek  | thinking         | true/false              | Aktifkan thought-process (CoT)
+  deepseek  | search           | true/false              | Aktifkan web search
+
+
+================================================================================
+BAGIAN 16 — STATELESSNESS / ZERO FOOTPRINT (WAJIB)
+================================================================================
+
+  - Arena   : navigasi ke endpoint /direct (sudah anonim) + clear_cookies()
+              setelah setiap execute().
+  - Qwen    : SELALU gunakan ?temporary-chat=true + clear_cookies() setelah
+              setiap execute().
+  - DeepSeek: clear_cookies() setelah setiap execute(); cek & aktifkan mode
+              "temporary chat"/incognito jika tersedia di UI (verifikasi nyata).
+  - Setiap provider instance dipakai SEKALI per request lalu cleanup()
+    (browser context baru tiap request) — mencegah kebocoran resource dan
+    memastikan tidak ada state browser yang terbawa antar request.
+
+
+================================================================================
+BAGIAN 17 — TESTING & VERIFICATION PROTOCOL (WAJIB sebelum klaim selesai)
+================================================================================
+
+  1. Jalankan environment setup (Bagian 5) di server produksi yang punya
+     akses ke BRIDGE_SERVER_URL. EVIDENCE: output `playwright install-deps`
+     tanpa error, output `python -c "import playwright"` sukses.
+
+  2. Jalankan client.py (uvicorn). EVIDENCE: log startup menunjukkan
+     update_model_cache() berjalan dan model.json TERTULIS (tampilkan isi
+     file via `cat model.json`).
+
+  3. GET /v1/models. EVIDENCE: tampilkan response JSON lengkap + JUMLAH model
+     per provider per modality (hitung dari response, jangan dari asumsi).
+
+  4. test_all_models.py:
+       - Ambil daftar model dari /v1/models (DINAMIS, bukan hardcoded sample).
+       - Untuk setiap model, POST /v1/chat/completions dengan
+         messages=[{"role":"user","content":"hallo"}] + extra_params yang
+         relevan (default per Bagian 15).
+       - Catat: model_id, status (PASS/FAIL), potongan balasan, latency.
+       - Cetak ringkasan akhir: total model, jumlah PASS, jumlah FAIL, daftar
+         FAIL beserta error message asli.
+     EVIDENCE: output lengkap test_all_models.py (boleh dipotong untuk model
+     yang sangat banyak, tapi WAJIB menampilkan total count nyata dan minimal
+     beberapa contoh request/response asli per provider).
+
+  5. Verifikasi manual silang: jumlah model di model.json untuk Arena & Qwen
+     HARUS dibandingkan dengan jumlah yang terlihat manual di Web UI (oleh
+     user) — jika berbeda jauh, perbaiki discovery (Bagian 10/12), JANGAN
+     diabaikan.
+
+  Setiap klaim "provider X bekerja" WAJIB disertai potongan balasan ASLI dari
+  model (bukan teks yang dikarang), dan status HTTP 200.
+
+
+================================================================================
+BAGIAN 18 — KESALAHAN MASA LALU YANG TIDAK BOLEH DIULANG
+================================================================================
+
+  1. JANGAN gunakan paket Python `playwright-extra` atau `playwright_stealth`.
+     Di histori chat, ini menyebabkan error berulang
+     (`TypeError: 'module' object is not callable`, import yang membingungkan,
+     dan paket tidak tersedia stabil di PyPI). Stealth WAJIB diimplementasikan
+     MANUAL via CDP (`Page.addScriptToEvaluateOnNewDocument` +
+     `Network.setExtraHTTPHeaders`) seperti di Bagian 8 — pendekatan ini SUDAH
+     tervalidasi sebagai pengganti yang berfungsi.
+
+  2. JANGAN mencoba reverse-engineering API internal Arena.ai (Gradio
+     /queue/join, /queue/data, fn_index, dll). Jalur ini TERBUKTI BUNTU:
+     dilindungi Cloudflare WAF + reCAPTCHA Enterprise, fn_index dinamis dan
+     berubah tiap deploy. Satu-satunya jalur yang valid adalah browser
+     automation memakai session asli dari bridge-server.
+
+  3. JANGAN pindahkan logic eksekusi (chat/prompt) ke bridge-server
+     (arsitektur "/proxy-chat" / Hub-and-Spoke Proxy). Ini SUDAH DIIMPLEMENTASI
+     sekali di histori dan KEMUDIAN DIBATALKAN/DITOLAK secara eksplisit oleh
+     pemilik proyek. Bridge-server = session provider saja (Bagian 3 & 4).
+
+  4. JANGAN melaporkan jumlah model berdasarkan data "seed"/"bootstrap"/mock
+     sebagai hasil akhir. Di histori, bootstrap_cache.py membuat model.json
+     berisi 10 model "seed" yang kemudian dilaporkan sebagai hasil — user
+     memvalidasi manual dan menyatakan ini "1000% salah" (jumlah asli Arena &
+     Qwen jauh lebih banyak, terutama daftar "Expand More" Qwen). model.json
+     HARUS selalu berasal dari list_models() yang benar-benar dijalankan.
+
+  5. JANGAN menyatakan sistem "READY/100%/selesai" hanya karena kode sudah
+     ditulis. WAJIB jalankan dan tunjukkan bukti (Bagian 17). Klaim tanpa
+     eksekusi adalah pelanggaran prinsip Bagian 0.
+
+  6. Halaman Arena memiliki MINIMAL 2 elemen `role="combobox"` (mode switcher
+     vs model selector) — logic list_models/execute HARUS membedakan keduanya
+     (jangan asal ambil combobox pertama), karena di histori ini menyebabkan
+     get_models() mengembalikan nama MODE ("Battle", "Direct", dst) bukan nama
+     MODEL.
+
+  7. Error sistem seperti `libnspr4.so: cannot open shared object file` adalah
+     masalah DEPENDENSI OS (`playwright install-deps`), BUKAN bug kode. Jika
+     muncul di lingkungan kerja Anda, JANGAN menyimpulkan kode salah dan
+     mengubah logic — perbaiki environment, lalu uji ulang. Tapi JANGAN PULA
+     menjadikan ini alasan untuk tidak menjalankan verifikasi sama sekali di
+     server produksi yang sebenarnya.
+
+  8. JANGAN membuat banyak file eksperimen sekali pakai yang menumpuk di root
+     repo (arena_cli.py, arena_pro.py, arena_gateway.py, discovery_probe*.py,
+     dump_text.py, dom_probe.py, count_models.py, dst — semua ini adalah sisa
+     iterasi gagal di histori). Struktur akhir HANYA seperti Bagian 6. File-file
+     eksperimen lama boleh dihapus/diarsipkan setelah bridge-client baru
+     terverifikasi bekerja.
+
+
+================================================================================
+BAGIAN 19 — DOKUMENTASI YANG WAJIB DIPERBARUI/DIBUAT
+================================================================================
+
+  1. how_to_use.md
+     - Diagram arsitektur (teks) Session-Provider/Executor-Client (Bagian 4).
+     - Setup .env, instalasi (Bagian 5).
+     - Cara menjalankan client.py.
+     - Contoh curl untuk SETIAP provider (arena/text, arena/search, arena/image,
+       arena/code, qwen, deepseek) dengan extra_params relevan.
+     - Tabel Feature Matrix (Bagian 15).
+     - Penjelasan Model Cache System (model.json, refresh 60 menit).
+
+  2. model.md
+     - Snapshot HASIL NYATA model.json (jumlah model per provider per
+       modality, diambil dari hasil verifikasi Bagian 17 — bukan contoh).
+     - Penjelasan mekanisme discovery per provider (termasuk catatan "Expand
+       More" untuk Qwen, 4 modality untuk Arena).
+
+  3. README.md
+     - Overview singkat, quick start, link ke how_to_use.md & model.md.
+     - Catatan jelas: bridge-server SUDAH berjalan terpisah (lihat Bagian 3),
+       repo ini fokus ke bridge-client.
+
+
+================================================================================
+BAGIAN 20 — DEFINITION OF DONE (CHECKLIST AKHIR)
+================================================================================
+
+  [ ] providers/base.py: browser headless + CDP stealth manual berjalan tanpa
+      error import (tidak ada playwright-extra/playwright_stealth).
+  [ ] providers/arena.py: list_models() mengembalikan model NYATA untuk
+      ke-4 modality (text/search/image/code), dengan disambiguasi combobox
+      mode vs model.
+  [ ] providers/qwen.py: list_models() mengembalikan model Primary + Expanded
+      (klik "Expand More" terbukti berjalan).
+  [ ] providers/deepseek.py: list_models() mengembalikan model nyata (atau
+      fallback yang ditandai jelas sebagai fallback).
+  [ ] registry.py: parsing bridge/<provider>/[<modality>/]<model> berjalan +
+      error handling 400/404 sesuai spek.
+  [ ] client.py:
+        - SessionManager (Fernet AES-256) berfungsi: sync dari
+          BRIDGE_SERVER_URL, simpan terenkripsi, deteksi expired, auto-refresh
+          on auth-failure, graceful degradation saat server offline.
+        - model.json dibuat saat startup (await, bukan fire-and-forget) dan
+          ter-refresh tiap 60 menit via background task; tidak menimpa data
+          baik dengan data kosong saat error.
+        - GET /v1/models membaca model.json (instan, tanpa scraping).
+        - POST /v1/chat/completions berfungsi untuk arena (4 modality), qwen,
+          deepseek, dengan extra_params sesuai Bagian 15.
+        - cleanup() dipanggil setelah setiap request (tidak ada leaked
+          browser process).
+  [ ] test_all_models.py: dijalankan, menampilkan matriks PASS/FAIL untuk
+      SEMUA model yang terdeteksi DINAMIS, dengan potongan balasan asli.
+  [ ] Statelessness terverifikasi: cookies provider ter-clear setelah setiap
+      eksekusi; Qwen selalu via ?temporary-chat=true; Arena via /direct.
+  [ ] model.json isi NYATA dilampirkan sebagai evidence (cat model.json),
+      jumlah per provider per modality dilaporkan apa adanya (termasuk jika
+      0/error, dengan last_error yang jelas).
+  [ ] how_to_use.md, model.md, README.md diperbarui sesuai Bagian 19.
+  [ ] Tidak ada file eksperimen sisa iterasi lama yang membingungkan struktur
+      akhir (Bagian 18 poin 8).
+
+
+================================================================================
+BAGIAN 21 — URUTAN EKSEKUSI YANG DISARANKAN
+================================================================================
+
+  1. Setup environment (Bagian 5) di server target -> verifikasi playwright +
+     chromium jalan (skrip kecil: buka https://example.com headless, screenshot).
+  2. Implement providers/base.py -> uji _setup_browser() berhasil membuka
+     halaman dengan cookies dari /get-session/arena (yang sudah login).
+  3. Implement SessionManager + get_effective_session() di client.py minimal
+     (tanpa endpoint dulu) -> uji sync dari BRIDGE_SERVER_URL berhasil &
+     tersimpan terenkripsi di sessions/.
+  4. Implement providers/arena.py.list_models() untuk SATU modality dulu
+     (text) -> jalankan -> dump hasil mentah -> jika selector tidak menemukan
+     model, lakukan debugging DOM nyata (Bagian 12) sampai mendapat list model
+     yang masuk akal -> baru lanjut ke 3 modality lainnya.
+  5. Implement providers/qwen.py.list_models() -> pastikan langkah "Expand
+     More" terbukti menambah jumlah model (bandingkan sebelum/sesudah klik).
+  6. Implement providers/deepseek.py.list_models().
+  7. Implement registry.py + model.json cache system + endpoint /v1/models ->
+     verifikasi isi model.json (Bagian 17 langkah 1-3).
+  8. Implement execute() untuk masing-masing provider (mulai dari yang paling
+     sederhana DOM-nya) -> uji manual satu model per provider via curl ke
+     /v1/chat/completions dengan prompt "hallo".
+  9. Implement extra_params per Bagian 15 untuk Qwen & DeepSeek -> uji
+     toggle thinking/tools/mode/search benar-benar mengubah behavior (cek log
+     / screenshot sebelum-sesudah klik toggle).
+  10. Implement test_all_models.py -> jalankan untuk SEMUA model dinamis ->
+      iterasi fix sampai mayoritas PASS; untuk yang tetap FAIL, dokumentasikan
+      error asli + analisis root cause (Bagian 0.2).
+  11. Finalisasi dokumentasi (Bagian 19) dan checklist (Bagian 20).
+  12. Bersihkan file-file eksperimen lama (Bagian 18 poin 8) setelah semua
+      verifikasi di atas PASS.
+
+================================================================================
+SELESAI. Mulai dari Bagian 21 langkah 1. Laporkan progres mengikuti format
+CLAIM/EVIDENCE/VERDICT (Bagian 0.1) di setiap langkah besar.
+================================================================================
