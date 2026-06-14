@@ -1,0 +1,9 @@
+# Auto-generated
+.env
+__pycache__/
+*.pyc
+sessions/*.bin
+.DS_Store
+
+# Live model cache - regenerate at startup
+model.json
