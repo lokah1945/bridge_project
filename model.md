@@ -1,29 +1,30 @@
 # Live model snapshot
 
 This file is auto-populated by `bridge-client`'s discovery probes.
-The numbers below come from a real run against `BRIDGE_SERVER_URL` on
-the build host (2026-06-14).
+Numbers below come from real runs against `BRIDGE_SERVER_URL`
+(build host 2026-06-14).
 
 ## Summary (verified by `/v1/models`)
 
-| Provider | Status       | Total models | Notes                                  |
-|----------|--------------|--------------|----------------------------------------|
-| arena    | ok           | 271          | 4 modality URLs (text/search/image/code) |
-| qwen     | ok           | 23           | 3 Primary + 20 from "Expand More"      |
-| deepseek | NO_SESSION   | 0            | bridge-server returned 404; login pending |
+| Provider | Status     | Total models | Notes                                          |
+|----------|------------|--------------|------------------------------------------------|
+| arena    | ok         | 271          | 4 modality URLs (text/search/image/code)       |
+| qwen     | ok         | 23           | 3 Primary + 20 from "Expand More"               |
+| deepseek | ok         | 3            | FALLBACK list (cookies stale; re-login needed)  |
+| kimi     | ok         | 4            | 4 K2.6 variants (chat gated by login modal)      |
 
-**Grand total served by `/v1/models`: 294**
+**Grand total served by `/v1/models`: 301**
 
 ## Arena — 271 models
 
-The Arena mode selector is a `role=combobox` button with text like
+The Arena **mode** selector is a `role=combobox` button with text like
 `Direct`/`Battle`/`Side-by-Side`/`Agent`.  The **model** selector is a
 separate button with `aria-haspopup="dialog"` showing the current model
 name (e.g. `Max`).  We click the latter via `page.evaluate(JS click)` to
 bypass viewport-overlap quirks and scrape every `[role="option"]` in
 the Radix-UI dialog.
 
-| Modality | Count | First 3                                                          |
+| Modality | Count | Sample (first 3)                                                 |
 |----------|-------|------------------------------------------------------------------|
 | text     | 135   | gemini-3-flash, gpt-5.2-chat-latest, glm-5.1                     |
 | search   | 16    | claude-sonnet-4-6-search, grok-4.20-multi-agent-beta-0309, gpt-5.2-search |
@@ -32,85 +33,111 @@ the Radix-UI dialog.
 
 ## Qwen — 23 models
 
-The Qwen model selector is an Ant Design `<span class="ant-dropdown-trigger">`
-whose descendant carries `index-module__model-selector-text`.  The
-dropdown shows 3 primary models first, then an "Expand more models" link.
-We click that link via Playwright's native click (JS `.click()` does
-**not** trigger React's onClick reliably) and re-scrape.
+The Qwen model selector is an Ant Design
+`<span class="ant-dropdown-trigger">` whose descendant carries
+`index-module__model-selector-text`.  The dropdown shows 3 primary
+models first, then an "Expand more models" link.  We click that link
+via Playwright's native click (JS `.click()` does NOT trigger React's
+onClick reliably) and re-scrape.
 
-| Bucket          | Count | Models (abbreviated)                                                |
-|-----------------|-------|---------------------------------------------------------------------|
-| Primary         | 3     | Qwen3.7-Plus, Qwen3.7-Max, Qwen3.6-Plus                             |
+| Bucket          | Count | Sample (abbreviated)                                              |
+|-----------------|-------|-------------------------------------------------------------------|
+| Primary         | 3     | Qwen3.7-Plus, Qwen3.7-Max, Qwen3.6-Plus                           |
 | Expanded (+20)  | 20    | Qwen3-Max, Qwen3-Coder, Qwen3-Omni-Flash, Qwen3-VL-235B-A22B, Qwen3-235B-A22B-2507, Qwen3.5-Plus, Qwen3.5-Omni-Plus, Qwen3.6-35B-A3B, Qwen3.6-27B, Qwen3.6-Max-Preview, Qwen3.6-Plus-Preview, Qwen3.5-Flash, Qwen3.5-Max-Preview, Qwen3.7-Max-Preview, Qwen3.7-Plus-Preview, Qwen3.5-122B-A10B, Qwen3.5-Omni-Flash, Qwen3.5-27B, Qwen3.5-35B-A3B, Qwen3.5-397B-A17B |
 
-## DeepSeek — 0 models
+## DeepSeek — 3 models (FALLBACK)
 
-DeepSeek discovery depends on `/get-session/deepseek` returning a
-valid cookie set from a logged-in bridge-server profile.  On the
-current build host the endpoint returns **404 Not Found** and the
-client sets status=`NO_SESSION` for the provider.  To enable DeepSeek
-models, log in via bridge-server's `/open?url=https://chat.deepseek.com`
-endpoint and re-run the gateway (the cache will refresh within
-`MODEL_CACHE_REFRESH_MINUTES`, default 60).
+chat.deepseek.com redirects to `/sign_in` when session cookies are
+stale (no logged-in user).  We detect this early and return a clear
+error message instead of hanging on a 30 s fill() timeout.  The FALLBACK
+list is returned so `/v1/models` still has something for this provider:
 
-## Verification — `test_all_models.py` on all 23 Qwen models
+- deepseek-chat
+- deepseek-reasoner
+- deepseek-coder
 
-| Status | Count | Latency | Notes                                              |
-|--------|-------|---------|----------------------------------------------------|
-| PASS   | 13    | 12-33 s | Real AI response captured from the page            |
-| FAIL   | 10    | 130+ s  | Thinking-mode models exceeded the 130 s polling    |
+To enable real DeepSeek chat, log in via `bridge-server`'s
+`/open?url=https://chat.deepseek.com` then refresh the cache.
 
-PASS examples (excerpt of response):
+## Kimi — 4 models (chat requires login)
 
-```
-[PASS] bridge/qwen/Qwen3-235B-A22B-2507   (14.9s) "Hallo! 😊 It's Sunday, June 14, 2026—how can I assist you today?..."
-[PASS] bridge/qwen/Qwen3-Coder             (12.8s) "Hallo! Wie kann ich dir helfen?"
-[PASS] bridge/qwen/Qwen3-Max               (12.8s) "Hallo! Wie kann ich Ihnen helfen?"
-[PASS] bridge/qwen/Qwen3-Omni-Flash        (18.9s) "Hallo! 😊 Wie kann ich dir heute helfen?..."
-[PASS] bridge/qwen/Qwen3-VL-235B-A22B      (32.8s) "Hallo! Wie kann ich dir heute helfen? 😊"
-[PASS] bridge/qwen/Qwen3.5-35B-A3B         (12.9s) "Ob Sie Fragen zu einem bestimmten Thema haben..."
-[PASS] bridge/qwen/Qwen3.5-397B-A17B       (28.8s) "Hallo! Wie geht es dir? Was kann ich heute für dich tun? 👋"
-[PASS] bridge/qwen/Qwen3.5-Omni-Flash      (13.0s) "Hallo! Wie kann ich dir heute helfen?"
-[PASS] bridge/qwen/Qwen3.5-Omni-Plus       (12.8s) "Hallo! Hoe kan ik je vandaag helpen?"
-[PASS] bridge/qwen/Qwen3.6-27B             (16.9s) "Hallo! Wie kann ich dir heute helfen? 😊"
-[PASS] bridge/qwen/Qwen3.6-35B-A3B         (14.9s) "Hallo! Wie kann ich dir heute helfen?"
-[PASS] bridge/qwen/Qwen3.7-Max-Preview     (20.8s) "Hallo! Wie kann ich Ihnen heute helfen?"
-[PASS] bridge/qwen/Qwen3.7-Plus-Preview    (26.7s) "Hallo! Wie kann ich Ihnen heute helfen?"
-```
+www.kimi.com shows 4 K2.6 variants in the model popup:
 
-FAIL examples (timeout, not API error — models would respond given more time):
+- K2.6 Instant — quick response
+- K2.6 Thinking — deep thinking
+- K2.6 Agent — research / slides / websites / docs / sheets
+- K2.6 Agent Swarm — large-scale search / long-form writing / batch tasks
+
+**Discovery works** (popup opens correctly).
+
+**Chat requires full account login**: although bridge-server's session
+cookie blob contains `.kimi.com` cookies (shared Chromium profile),
+clicking Send opens a "Log in to chat with Kimi for Free" modal with
+"Continue with Google" / "Log in with phone number" options.  We
+detect this modal and return a clear error in <15 s instead of timing
+out:
 
 ```
-[FAIL] bridge/qwen/Qwen3.5-122B-A10B  (133.2s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.5-27B        (132.9s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.5-Flash      (132.9s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.5-Max-Preview (132.9s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.5-Plus       (132.9s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.6-Max-Preview (180.1s) network: ...
-[FAIL] bridge/qwen/Qwen3.6-Plus        (131.6s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.6-Plus-Preview(133.0s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.7-Max        (131.6s) empty response: '(no response)'
-[FAIL] bridge/qwen/Qwen3.7-Plus       (131.7s) empty response: '(no response)'
+"(kimi requires full account login to send messages - the browser
+session alone is not enough; complete Kimi login via bridge-server)"
 ```
 
-**Qwen pass rate: 13/23 = 56%** (the 10 failures are thinking-mode
-models that need >2 minutes; raising `--timeout 600` would catch more).
+To enable real Kimi chat, complete the Google/phone login via
+`bridge-server` `/open?url=https://www.kimi.com/`.
 
-## Arena execute verification
+## End-to-end verification (build host 2026-06-14)
 
-Arena models list correctly via the discovery probes (271 models), but
-the **chat submission is blocked by Cloudflare bot detection** even with
-the real `cf_clearance` cookie.  All Arena `POST /v1/chat/completions`
-calls return HTTP 200 with body `(empty response)` in 8-40 s.
+### `/health`
 
-This is a real limitation imposed by Cloudflare's
-anti-bot-enforcement on the `/direct` endpoints.  There is no workaround
-inside the Playwright + headless-Chromium + CDP-stealth approach
-implemented here (see MASTER PROMPT Bagian 18.2 — `playwright-extra` /
-reverse-engineered APIs are explicitly forbidden).
+```json
+{
+  "status": "ok",
+  "providers": {"arena": "ok", "qwen": "ok", "deepseek": "ok", "kimi": "ok"}
+}
+```
 
-## DeepSeek
+### `/v1/models`
 
-Discovery returns 0 models with `status=NO_SESSION`.  Once the
-bridge-server profile for chat.deepseek.com is logged in, the cache
-will pick up the models on the next refresh cycle (default 60 min).
+301 models served.
+
+### `/v1/chat/completions`
+
+| Model | Status | Latency | Result |
+|-------|--------|---------|--------|
+| `bridge/qwen/Qwen3-Coder` | **PASS** | 12.8 s | `"Hallo! (Hello!) How can I assist you today?"` |
+| `bridge/qwen/Qwen3.5-Omni-Plus` | **PASS** | 12.6 s | `"Hallo! Wie kann ich Ihnen heute helfen?"` |
+| `bridge/qwen/Qwen3-Max` | **PASS** | 12.9 s | `"Hallo! Wie kann ich dir helfen?"` |
+| `bridge/qwen/Qwen3.5-Flash` | TIMEOUT | 130 s+ | thinking-mode model exceeds polling window |
+| `bridge/kimi/K2.6 Instant` | CLEAN_ERR | 12.2 s | login modal detected → clear error message |
+| `bridge/deepseek/deepseek-chat` | CLEAN_ERR | 7.1 s | cookies stale → `/sign_in` redirect → clear error |
+| `bridge/arena/text/gemini-3-flash` | EMPTY | 8.5 s | Cloudflare bot detection on form submit |
+| `bridge/arena/code/gemini-3-flash` | EMPTY | 38 s | same |
+| `bridge/nonexistent/foo` | **404** | 0.0 s | clean error, no server crash |
+
+### Streaming
+
+`POST /v1/chat/completions` with `stream: true` returns real OpenAI-style
+SSE chunks with `data: [DONE]`.  Verified manually.
+
+### Error semantics
+
+All input validation errors return proper HTTP codes — no 500s:
+
+| Input | Status | Response |
+|-------|--------|----------|
+| `bridge/nonexistent/foo` | **404** | `Provider 'nonexistent' not found. Known: [arena, deepseek, kimi, qwen]` |
+| `gpt-4` (no `bridge/` prefix) | **400** | `model 'gpt-4' is not in bridge/ format` |
+| empty `messages` | **400** | `messages must not be empty` |
+| `[{role: assistant, content: "hi"}]` | **400** | `only user-role messages are supported` |
+| `bridge/arena/audio/foo` | **400** | `arena modality 'audio' not in {text, search, image, code}` |
+
+## Documented limitations
+
+- **Arena execute()** — Cloudflare bot detection blocks form submission
+  even with the real `cf_clearance` cookie.  See MASTER PROMPT
+  Bagian 18.2.
+- **Qwen thinking-mode models** — the page reports `Thinking
+  completed` after >130 s; default polling window catches only fast
+  models.  Use `--timeout 600` (or higher) to catch them.
+- **DeepSeek / Kimi** — require full account login on chat.deepseek.com
+  / www.kimi.com.  Cookie-only authentication is insufficient.

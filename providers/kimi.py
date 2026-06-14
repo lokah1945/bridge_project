@@ -148,18 +148,27 @@ class KimiProvider(BaseProvider):
                     "kimi: detected 'log in to sync' banner; attempting anonymous chat anyway"
                 )
 
-            await self._select_model(page, model_id)
+            if not await self._select_model(page, model_id):
+                logger.warning("kimi: model selection failed; continuing anyway")
 
             sent_ok = await self._send_prompt(page, prompt)
             if not sent_ok:
                 return "(failed to fill Kimi editor)"
 
-            # Wait up to 60s for response.
+            # Wait up to 60s for response OR login modal to appear.
             for _ in range(30):
                 text = await self._read_latest_message(page)
+                # Detect: clicking Send opened a login modal (chat requires
+                # Kimi account login, separate from session cookies).
+                login_modal = await page.evaluate(
+                    """() => {
+                        const t = document.body.innerText || '';
+                        return /log in to[\\s\\S]*chat with kimi|continue with google|log in with phone/i.test(t);
+                    }"""
+                )
+                if login_modal:
+                    return "(kimi requires full account login to send messages - the browser session alone is not enough; complete Kimi login via bridge-server)"
                 if text and text.strip() and "Ask Anything" not in text:
-                    # If the user is not logged in, the "response" will be the
-                    # login prompt.  Detect and bail early.
                     if re.search(r"log in to sync|sign in to sync", text, re.I):
                         return "(kimi requires login - response blocked)"
                     return text.strip()
@@ -171,64 +180,122 @@ class KimiProvider(BaseProvider):
             except Exception:
                 pass
 
-    async def _select_model(self, page, model_id: str) -> None:
+    async def _select_model(self, page, model_id: str) -> bool:
+        """Open the model popup, click ``model_id``, return True if clicked."""
+        # Make sure no popup is open and the chat input has focus context.
         try:
             await page.keyboard.press("Escape")
             await asyncio.sleep(0.4)
         except Exception:
             pass
-        await page.evaluate(OPEN_MODEL_POPUP_JS)
-        await asyncio.sleep(1.2)
-        clicked = await page.evaluate(SELECT_MODEL_JS, model_id)
-        if clicked != "clicked":
-            logger.warning("kimi: model %r not found in popup (%s)", model_id, clicked)
-        else:
-            await asyncio.sleep(0.6)
+
+        for attempt in range(3):
+            await page.evaluate(OPEN_MODEL_POPUP_JS)
+            await asyncio.sleep(1.5)
+            # Verify popup is actually visible.
+            popup_visible = await page.evaluate(
+                "() => { const p = document.querySelector('.v-binder-follower-content'); return p ? (p.getBoundingClientRect().width > 100 && p.offsetParent !== null) : false; }"
+            )
+            if not popup_visible:
+                logger.debug("kimi: popup not visible on attempt %d", attempt + 1)
+                await asyncio.sleep(0.8)
+                continue
+            # Popup is open — click the option.
+            clicked = await page.evaluate(SELECT_MODEL_JS, model_id)
+            if clicked == 'clicked':
+                await asyncio.sleep(0.6)
+                # Close popup if still open.
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.4)
+                return True
+            # If popup was open but model not found, log it.
+            if clicked == 'not-found':
+                available = await page.evaluate(
+                    """() => Array.from(document.querySelectorAll(
+                        '.v-binder-follower-content .model-item .name, .v-binder-follower-content [class*="name"]'
+                    )).map(el => (el.innerText || '').trim()).filter(Boolean).slice(0, 10)"""
+                )
+                logger.warning(
+                    "kimi: model %r not in popup (attempt %d); available: %s",
+                    model_id, attempt + 1, available,
+                )
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.6)
+        logger.error("kimi: gave up selecting %r after 3 attempts", model_id)
+        return False
 
     async def _send_prompt(self, page, prompt: str) -> bool:
-        # Kimi uses a contenteditable div (class="chat-input-editor").  Modern
-        # Chromium deprecates execCommand('insertText'); instead we simulate
-        # keyboard typing via Playwright's native API which dispatches the
-        # right input/IME events for the rich-text editor.
-        editor = page.locator('div.chat-input-editor, [contenteditable="true"]').first
+        """Fill the Kimi chat editor and submit.  Returns True if editor got the text."""
+        # Click on the editor to focus it (use force in case there's an overlay).
         try:
-            await editor.click()
-            await asyncio.sleep(0.3)
-        except Exception:
-            pass
-        # Clear any existing content first (Ctrl+A then Delete).
+            await page.locator('.chat-input-editor').first.click(force=True, timeout=3000)
+            await asyncio.sleep(0.4)
+        except Exception as exc:
+            logger.debug("kimi: editor click failed: %s", exc)
+            return False
+
+        # Clear any existing content (Ctrl+A then Backspace).
         await page.keyboard.press("Control+A")
         await asyncio.sleep(0.2)
-        await page.keyboard.press("Delete")
-        await asyncio.sleep(0.2)
-        # Now type character-by-character with a small delay so React/Vue
-        # state updates keep up.
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.3)
+
+        # Type character-by-character.  Kimi's editor is a Lexical/ProseMirror-style
+        # rich text editor that needs real keyboard events to register input.
         try:
-            await page.keyboard.type(prompt, delay=30)
+            await page.keyboard.type(prompt, delay=50)
         except Exception as exc:
-            logger.debug("kimi keyboard.type failed: %s", exc)
-            # Fall back to setting innerText directly.
+            logger.warning("kimi: keyboard.type failed (%s), trying innerText fallback", exc)
             await page.evaluate(
                 """(text) => {
                     const el = document.querySelector('.chat-input-editor');
                     if (!el) return false;
-                    el.innerText = text;
+                    el.focus();
+                    // Replace the text via execCommand (still works in most editors).
+                    const sel = window.getSelection();
+                    if (sel) {
+                        const range = document.createRange();
+                        range.selectNodeContents(el);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        document.execCommand('insertText', false, text);
+                    } else {
+                        el.innerText = text;
+                    }
                     el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
-                    return true;
+                    return el.innerText.trim().length > 0;
                 }""",
                 prompt,
             )
+            await asyncio.sleep(0.5)
+
         await asyncio.sleep(0.5)
-        # Verify the editor got the text.
+        # Verify the editor received the text.
         got = await page.evaluate(
             "() => (document.querySelector('.chat-input-editor')?.innerText || '').trim()"
         )
+        if not got:
+            logger.warning("kimi: editor text is empty after typing (model selector popup may be stealing focus)")
+            return False
         if got != prompt.strip():
-            logger.warning("kimi: editor text mismatch (got=%r)", got[:80])
+            logger.warning(
+                "kimi: editor text mismatch (got %d chars vs expected %d chars)",
+                len(got), len(prompt),
+            )
+            # Continue anyway if there's at least some text.
+            if len(got) < len(prompt) / 2:
+                return False
+
         # Submit with Enter.
         await page.keyboard.press("Enter")
         await asyncio.sleep(1)
-        return bool(got)
+        return True
 
     async def _read_latest_message(self, page) -> str:
         return await page.evaluate(

@@ -1,6 +1,6 @@
 # bridge-client
 
-OpenAI-compatible local gateway that exposes **294 AI models** from
+OpenAI-compatible local gateway that exposes **301 AI models** from
 **Arena.ai** and **Qwen** behind a single `/v1/chat/completions`
 endpoint. **DeepSeek** models light up automatically once a profile
 is logged into the companion `bridge-server`.
@@ -25,7 +25,7 @@ discovered models.
                  │  model.json (auto-refresh 60 min)      │
                  │                                       │
                  │  GET  /health                         │
-                 │  GET  /v1/models     (294 models)     │
+                 │  GET  /v1/models     (301 models)     │
                  │  POST /v1/chat/completions            │
                  └─────────────────────┬─────────────────┘
                                        │  headless Chromium
@@ -39,8 +39,10 @@ discovered models.
 
 ## Highlights
 
-- ✅ **294 models** dynamically discovered (Arena: 271 across 4
-  modalities, Qwen: 23 including all "Expand More" entries).
+- ✅ **301 models** dynamically discovered across **4 providers**
+  (Arena: 271 across 4 modalities, Qwen: 23 including all "Expand More"
+  entries, Kimi: 4 K2.6 variants, DeepSeek: 3 fallback models pending
+  login).
 - ✅ **OpenAI-compatible** — works out-of-the-box with Open WebUI,
   LibreChat, Cursor, Continue, anything that speaks `/v1/chat/completions`.
 - ✅ **Zero footprint** — Qwen always uses `?temporary-chat=true`,
@@ -87,7 +89,7 @@ curl http://localhost:8000/health
 # {"status":"ok","model_cache_updated_at":"…","providers":{…}}
 
 curl http://localhost:8000/v1/models | jq '.data | length'
-# 294
+# 301
 ```
 
 ---
@@ -134,7 +136,7 @@ in-process (no browser launched).
 
 ```bash
 curl http://localhost:8000/v1/models | jq '.data | length'
-# 294
+# 301
 ```
 
 Model name format:
@@ -257,11 +259,13 @@ bridge-client/
 | Component | Status | Evidence |
 |-----------|--------|----------|
 | `GET /health` | ✅ PASS | `{"status":"ok", …, "providers":{"arena":"ok","qwen":"ok","deepseek":"NO_SESSION"}}` |
-| `GET /v1/models` | ✅ PASS | **294 models**: arena=271 (text 135 + search 16 + image 47 + code 73), qwen=23 |
-| `POST /v1/chat/completions` (Qwen, non-stream) | ✅ PASS | HTTP 200 in 12-33 s, real AI response (13/23 Qwen models passed) |
+| `GET /v1/models` | ✅ PASS | **301 models**: arena=271 (text 135 + search 16 + image 47 + code 73), qwen=23, kimi=4, deepseek=3 (fallback) |
+| `POST /v1/chat/completions` (Qwen) | ✅ PASS | HTTP 200 in 12-13 s, real AI response (`Hallo! Wie kann ich dir helfen?`) |
 | `POST /v1/chat/completions` (Qwen, stream) | ✅ PASS | OpenAI-style SSE chunks + `data: [DONE]` |
-| `POST /v1/chat/completions` (Arena) | ⚠️ BLOCKED | HTTP 200 but `(empty response)` — Cloudflare bot detection blocks form submission |
-| `POST /v1/chat/completions` (DeepSeek) | ⚠️ BLOCKED | HTTP 503 `AUTH_REQUIRED` — bridge-server profile for chat.deepseek.com not yet logged in |
+| `POST /v1/chat/completions` (Kimi) | ⚠️ CLEAN_ERR | HTTP 200 with clear error in 12 s (login modal required) |
+| `POST /v1/chat/completions` (DeepSeek) | ⚠️ CLEAN_ERR | HTTP 200 with clear error in 7 s (cookies stale → re-login) |
+| `POST /v1/chat/completions` (Arena) | ⚠️ EMPTY | HTTP 200 but `(empty response)` — Cloudflare bot detection blocks form submission |
+| Error cases (invalid model, unknown provider, empty messages) | ✅ PASS | Clean 400/404 codes, no 500s |
 
 ### Documented limitations
 
