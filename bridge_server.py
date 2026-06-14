@@ -92,24 +92,33 @@ class BridgeState:
         self.lock = asyncio.Lock()
 
     async def launch(self) -> None:
-        """Launch the persistent headfull (or headless) Chrome."""
+        """Launch the persistent headfull (or headless) Chrome.
+
+        On Windows just run as-is.  On Linux without a display, you can
+        either set ``HEADLESS=true`` or wrap with ``xvfb-run``:
+            xvfb-run -a python bridge_server.py
+        """
         Path(USER_DATA_DIR).mkdir(parents=True, exist_ok=True)
         self.playwright = await async_playwright().start()
         # Use launch_persistent_context so the user-data-dir is the same
         # across restarts (cookies + localStorage persist).
+        effective_headless = HEADLESS or self._should_force_headless()
         args = [
-            f"--remote-debugging-port={REMOTE_DEBUGGING_PORT}",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
         ]
+        # remote-debugging-port is only valid in headed mode (the headless
+        # shell rejects it).
+        if not effective_headless:
+            args.append(f"--remote-debugging-port={REMOTE_DEBUGGING_PORT}")
         logger.info(
             "launching persistent Chrome (user_data_dir=%s, headless=%s)",
-            USER_DATA_DIR, HEADLESS,
+            USER_DATA_DIR, effective_headless,
         )
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
-            headless=HEADLESS,
+            headless=effective_headless,
             args=args,
             # Default viewport; the user can resize the window manually.
             viewport={"width": 1366, "height": 768},
@@ -117,8 +126,19 @@ class BridgeState:
             no_viewport=False,
         )
         self.browser = self.context.browser  # may be None on persistent
-        logger.info("persistent Chrome launched on remote-debugging-port=%s",
-                    REMOTE_DEBUGGING_PORT)
+        logger.info("persistent Chrome launched (headless=%s) on remote-debugging-port=%s",
+                    effective_headless, REMOTE_DEBUGGING_PORT)
+
+    @staticmethod
+    def _should_force_headless() -> bool:
+        """Linux without DISPLAY?  Force headless so Chrome doesn't crash."""
+        if os.name != "posix":
+            return False
+        if os.environ.get("DISPLAY"):
+            return False
+        if os.environ.get("FORCE_HEADED"):
+            return False
+        return True
 
     async def shutdown(self) -> None:
         try:
@@ -210,19 +230,19 @@ state = BridgeState()
 
 # ===================================================================== FastAPI
 
-app = FastAPI(title="bridge-server", version="1.0.0")
+from contextlib import asynccontextmanager
 
 
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     await state.launch()
     # Best-effort: refresh sessions for all providers in the background.
     asyncio.create_task(_refresh_all_providers())
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
+    yield
     await state.shutdown()
+
+
+app = FastAPI(title="bridge-server", version="1.0.0", lifespan=lifespan)
 
 
 async def _refresh_all_providers() -> None:
