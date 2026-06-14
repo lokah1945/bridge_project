@@ -147,6 +147,30 @@ bridge/qwen/<model_id>
 bridge/deepseek/<model_id>
 ```
 
+### `POST /admin/login/{provider}` & `/admin/refresh/{provider}`
+
+When a provider's session expires (e.g. DeepSeek userToken JWT goes
+null, or Kimi requires re-auth via Google OAuth), the chat endpoints
+return a clear error message.  Trigger a fresh login via:
+
+```bash
+# 1. Open the login URL in bridge-server's headfull Chrome
+curl -X POST http://localhost:8000/admin/login/deepseek
+
+# 2. You log in there manually (Google/email/etc.)
+
+# 3. Pull the fresh cookies + refresh the cache
+curl -X POST http://localhost:8000/admin/refresh/deepseek
+```
+
+Or use the helper script:
+
+```bash
+python3 login_helper.py deepseek   # walks you through all 3 steps
+python3 login_helper.py kimi
+python3 login_helper.py --list     # show all providers' status
+```
+
 ### `POST /v1/chat/completions`
 
 ```bash

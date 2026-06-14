@@ -555,6 +555,139 @@ async def chat_completions(req: ChatRequest, request: Request) -> Any:
     return JSONResponse(_build_openai_response(req.model, content))
 
 
+# ============================================================ /admin/* routes
+
+# Map provider → URL that bridge-server's /open?url= endpoint will navigate
+# the persistent headfull Chrome to.  The user logs in there manually.
+# Once the cookies are refreshed, GET /v1/chat/completions will work.
+LOGIN_URLS: Dict[str, str] = {
+    "arena":    "https://arena.ai/text/direct",
+    "qwen":     "https://chat.qwen.ai/?temporary-chat=true",
+    "deepseek": "https://chat.deepseek.com/",
+    "kimi":     "https://www.kimi.com/",
+}
+
+
+@app.post("/admin/login/{provider}")
+async def admin_login(provider: str, request: Request) -> Dict[str, Any]:
+    """Open the provider's login URL in bridge-server's headfull Chrome.
+
+    The user must log in manually (Google OAuth, email/password, etc.) on the
+    page that opens in the persistent Chrome.  Once done, the cookies are
+    written to the persistent profile and will be picked up on the next
+    ``GET /get-session/<provider>`` call.
+
+    Body parameters (optional, JSON):
+        poll_seconds: int — how long to wait before returning (default 0,
+            we don't block; user can re-trigger chat to refresh)
+    """
+    url = LOGIN_URLS.get(provider)
+    if not url:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown provider {provider!r}; valid: {list(LOGIN_URLS)}",
+        )
+
+    # Call bridge-server /open?url=<url>
+    bridge_url = f"{BRIDGE_SERVER_URL}/open?url={url}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(bridge_url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"failed to call bridge-server /open: {exc}",
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"bridge-server /open returned HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+
+    logger.info(
+        "admin_login: triggered bridge-server /open for provider=%r url=%s",
+        provider, url,
+    )
+
+    return {
+        "status": "login_triggered",
+        "provider": provider,
+        "url": url,
+        "bridge_server_response": resp.text.strip()[:200],
+        "next_steps": [
+            f"1. bridge-server has opened {url} in headfull Chrome",
+            "2. log in manually (Google/email/etc.) on that page",
+            "3. wait for the chat input to appear (login complete)",
+            f"4. POST /admin/refresh/{provider} to pull fresh cookies",
+            "5. re-run your /v1/chat/completions request",
+        ],
+    }
+
+
+@app.post("/admin/refresh/{provider}")
+async def admin_refresh(provider: str, request: Request) -> Dict[str, Any]:
+    """Force-refresh the session for ``provider`` from bridge-server.
+
+    Tries the provider's direct endpoint first; if that returns 404 and the
+    provider has a configured fallback chain (e.g. kimi/deepseek share the
+    arena profile's cookie blob), it pulls the fallback provider's session
+    instead.  Encrypts locally, then re-runs model discovery.
+    """
+    manager: SessionManager = request.app.state.session_manager
+    # 1. try direct
+    fresh = await fetch_session_from_server(provider)
+    # 2. try fallback chain (used by kimi/deepseek which share arena's profile)
+    if fresh is None:
+        for fallback in PROVIDER_FALLBACKS.get(provider, []):
+            fb = await fetch_session_from_server(fallback)
+            if fb is not None and fb.get("cookies"):
+                fresh = fb
+                logger.info(
+                    "admin_refresh: using fallback provider %r session for %s",
+                    fallback, provider,
+                )
+                break
+    if fresh is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"bridge-server returned no session for {provider!r}.  "
+                f"If this is a new provider, POST /admin/login/{provider} "
+                f"first to open the login page in bridge-server's headfull Chrome."
+            ),
+        )
+    manager.save_session(provider, fresh)
+    logger.info("admin_refresh: saved fresh session for %s", provider)
+    # also refresh model cache so /v1/models reflects the new state
+    await update_model_cache(manager)
+    return {
+        "status": "refreshed",
+        "provider": provider,
+        "cookie_count": len(fresh.get("cookies", [])),
+        "user_agent_present": bool(fresh.get("user_agent")),
+        "model_cache_refreshed_at": _load_model_cache().get("updated_at"),
+    }
+
+
+@app.post("/admin/refresh-cache")
+async def admin_refresh_cache(request: Request) -> Dict[str, Any]:
+    """Force-refresh the entire model cache from all providers."""
+    manager: SessionManager = request.app.state.session_manager
+    cache = await update_model_cache(manager)
+    return {
+        "status": "refreshed",
+        "updated_at": cache.get("updated_at"),
+        "providers": {
+            k: {"status": v["status"], "model_count": (
+                sum(len(x) for x in v["models"].values())
+                if isinstance(v.get("models"), dict)
+                else len(v.get("models", []))
+            )}
+            for k, v in cache.get("providers", {}).items()
+        },
+    }
+
+
 # --------------------------------------------------------------------- entry
 
 if __name__ == "__main__":
