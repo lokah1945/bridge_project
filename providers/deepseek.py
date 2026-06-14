@@ -103,13 +103,28 @@ class DeepSeekProvider(BaseProvider):
 
     async def execute(self, model_id: str, prompt: str, params: Dict[str, Any]) -> str:
         if not self.cookies:
-            return "(no session for deepseek - login required on bridge-server)"
+            return self._auth_error_msg()
         page = await self.setup_browser()
         try:
             await page.goto(self.URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(5.0)
-            if "/sign_in" in page.url:
-                return "(deepseek redirected to /sign_in - cookies are stale; re-login via bridge-server)"
+            await asyncio.sleep(3.0)
+            # Fast-fail if we land on /sign_in or userToken is null.
+            auth_state = await page.evaluate(
+                """() => ({
+                    url: location.href,
+                    hasSignIn: location.pathname.includes('sign_in'),
+                    userToken: (() => {
+                        try {
+                            const t = localStorage.getItem('userToken');
+                            if (!t) return null;
+                            const parsed = JSON.parse(t);
+                            return parsed?.value || null;
+                        } catch (e) { return null; }
+                    })(),
+                })"""
+            )
+            if auth_state["hasSignIn"] or not auth_state["userToken"]:
+                return self._auth_error_msg()
             await self._apply_options(page, params)
             await self._select_model(page, model_id)
             ta = page.locator("textarea").first
@@ -120,7 +135,7 @@ class DeepSeekProvider(BaseProvider):
             except Exception:
                 return "(deepseek chat textarea fill timed out)"
             await page.keyboard.press("Enter")
-            for _ in range(45):  # ~90s
+            for _ in range(22):  # ~45 s max — under 1 minute per spec
                 text = await page.evaluate(
                     """() => {
                         const sels = ['.ds-message', '[class*="message"]', '[class*="response"]'];
@@ -136,12 +151,24 @@ class DeepSeekProvider(BaseProvider):
                 if text and text.strip():
                     return text.strip()
                 await asyncio.sleep(2)
-            return "(no response from deepseek)"
+            return "(no response from deepseek within 45s)"
         finally:
             try:
                 await self.cleanup()
             except Exception:
                 pass
+
+    @staticmethod
+    def _auth_error_msg() -> str:
+        return (
+            "(deepseek not logged in: chat.deepseek.com requires an active "
+            "user session.  The cookies cached by bridge-server are stale "
+            "(localStorage userToken is null).  "
+            "FIX: open https://chat.deepseek.com/ in bridge-server's headfull "
+            "Chrome, log in (Google/email/Apple), wait for the chat textarea "
+            "to appear, then re-run /v1/chat/completions.  "
+            "Set BRIDGE_SERVER_URL to point to bridge-server and refresh.)"
+        )
 
     async def _select_model(self, page, model_id: str) -> None:
         for trig in [

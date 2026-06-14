@@ -266,30 +266,55 @@ async def update_model_cache(manager: SessionManager) -> Dict[str, Any]:
         prov = pc(session)
         try:
             if provider_name == "arena":
+                # Arena has 4 independent modalities.  Each can succeed or
+                # fail independently due to Cloudflare variability.  We merge:
+                # keep previous good data for any modality that returned 0
+                # models this time (instead of overwriting with empty list).
+                prev_models = prev.get("models") or {}
+                if not isinstance(prev_models, dict):
+                    prev_models = {}
                 models_by_modality: Dict[str, List[str]] = {
-                    "text": [], "search": [], "image": [], "code": []
+                    mod: list(prev_models.get(mod) or [])
+                    for mod in ("text", "search", "image", "code")
                 }
                 any_ok = False
+                any_failed = False
+                failed_mods = []
                 for mod in ("text", "search", "image", "code"):
                     try:
                         ms = await prov.list_models(modality=mod)
-                        models_by_modality[mod] = ms
                         if ms:
+                            models_by_modality[mod] = ms
                             any_ok = True
+                        else:
+                            # Empty result: keep previous if available,
+                            # otherwise report this modality as failed.
+                            if not models_by_modality[mod]:
+                                any_failed = True
+                                failed_mods.append(mod)
+                            logger.warning(
+                                "arena(%s) returned 0 models; "
+                                "keeping previous %d models from cache",
+                                mod, len(models_by_modality[mod]),
+                            )
                     except Exception as exc:
+                        any_failed = True
+                        failed_mods.append(mod)
                         logger.warning("arena(%s) failed: %s", mod, exc)
                 if any_ok:
                     results[provider_name] = {
-                        "status": "ok",
-                        "last_error": None,
-                        "models": models_by_modality,  # dict per modality
+                        "status": "stale" if any_failed else "ok",
+                        "last_error": (
+                            f"these modalities failed: {failed_mods}" if any_failed else None
+                        ),
+                        "models": models_by_modality,
                     }
                 else:
-                    # keep previous data but flag stale
+                    # all 4 failed: keep previous data verbatim.
                     results[provider_name] = {
                         "status": "stale",
-                        "last_error": "all modalities returned 0 models",
-                        "models": prev.get("models", models_by_modality),
+                        "last_error": "all 4 modalities failed; keeping previous cache",
+                        "models": prev_models,
                     }
             else:
                 models = await prov.list_models()

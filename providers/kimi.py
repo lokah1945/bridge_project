@@ -138,14 +138,23 @@ class KimiProvider(BaseProvider):
             await asyncio.sleep(3)
 
             # Detect login state.  Kimi shows "Log in to sync chat history"
-            # when the user has no session — chat submission silently no-ops.
-            not_logged_in = await page.evaluate(
-                "() => /log in to sync|sign in to sync/i.test(document.body.innerText)"
+            # when the user has no session.  Chat submission silently opens
+            # a full login modal (Google/phone).  Verify before trying.
+            login_state = await page.evaluate(
+                """() => {
+                    const t = document.body.innerText || '';
+                    return {
+                        hasSyncBanner: /log in to sync|sign in to sync/i.test(t),
+                        hasAvatar: !!document.querySelector('[class*="avatar" i]'),
+                        hasKimiAuth: !!document.cookie.match(/kimi-auth/),
+                    };
+                }"""
             )
-            if not_logged_in:
-                # Try anyway — sometimes anonymous chat works on www.kimi.com.
+            if not login_state["hasAvatar"] or not login_state["hasKimiAuth"]:
+                # We can still try to send, but it will open a login modal.
                 logger.warning(
-                    "kimi: detected 'log in to sync' banner; attempting anonymous chat anyway"
+                    "kimi: detected 'log in to sync' banner and no avatar/auth cookie; "
+                    "chat will require manual login"
                 )
 
             if not await self._select_model(page, model_id):
@@ -167,7 +176,14 @@ class KimiProvider(BaseProvider):
                     }"""
                 )
                 if login_modal:
-                    return "(kimi requires full account login to send messages - the browser session alone is not enough; complete Kimi login via bridge-server)"
+                    return (
+                    "(kimi not logged in: chat requires Google/phone login which "
+                    "can't be automated.  FIX: open https://www.kimi.com/ in "
+                    "bridge-server's headfull Chrome, sign in with Google or "
+                    "phone, wait for chat input to become active, then re-run.  "
+                    "Session cookies alone are not enough — Kimi uses a "
+                    "separate login state for billing/quota tracking.)"
+                )
                 if text and text.strip() and "Ask Anything" not in text:
                     if re.search(r"log in to sync|sign in to sync", text, re.I):
                         return "(kimi requires login - response blocked)"
