@@ -77,7 +77,7 @@ SCRAPE_DROPDOWN_MODELS = """() => {
         if (!/^Qwen/i.test(t)) continue;
         if (/Expand|Comparison|series|natively|flagship|capable|highly/i.test(t)) continue;
         // Require at least one digit, dash, dot, or "Plus/Max/Flash/Coder/Omni/VL"
-        if (!/[-]/.test(t) && !/\d/.test(t) && !/(Plus|Max|Flash|Coder|Omni|VL|Turbo)/.test(t)) continue;
+        if (!/[-]/.test(t) && !/[0-9]/.test(t) && !/(Plus|Max|Flash|Coder|Omni|VL|Turbo)/.test(t)) continue;
         out.add(t);
     }
     return Array.from(out);
@@ -149,7 +149,8 @@ class QwenProvider(BaseProvider):
             except Exception as exc:
                 logger.warning("qwen execute: textarea wait failed: %s", exc)
             await asyncio.sleep(3)
-            await self._select_model(page, model_id)
+            if not await self._select_model(page, model_id):
+                return f"(model {model_id!r} not found in Qwen dropdown)"
             await self._apply_options(page, params)
             await self._send_prompt(page, prompt)
             # wait for assistant content
@@ -166,7 +167,8 @@ class QwenProvider(BaseProvider):
             except Exception:
                 pass
 
-    async def _select_model(self, page, model_id: str) -> None:
+    async def _select_model(self, page, model_id: str) -> bool:
+        """Open the model dropdown and click ``model_id``.  Returns True if clicked."""
         # First, ensure no dropdown is open.
         try:
             await page.keyboard.press("Escape")
@@ -174,39 +176,83 @@ class QwenProvider(BaseProvider):
         except Exception:
             pass
 
-        await page.evaluate(OPEN_MODEL_DROPDOWN)
-        await asyncio.sleep(1.2)
-        # Try to find model in current dropdown first (handles the common
-        # case where the requested model is in the Primary list).
-        clicked = await page.evaluate(
-            """(modelId) => {
-                const dd = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden)');
-                if (!dd) return 'no-dd';
-                for (const el of dd.querySelectorAll('span, div')) {
-                    if (el.children.length !== 0) continue;
-                    const t = (el.innerText || '').trim();
-                    if (t === modelId) {
-                        el.click();
-                        return 'clicked';
+        # Try up to 3 times: open dropdown → find → click → verify selected.
+        for attempt in range(3):
+            await page.evaluate(OPEN_MODEL_DROPDOWN)
+            await asyncio.sleep(1.2)
+            clicked = await page.evaluate(
+                """(modelId) => {
+                    const dd = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden)');
+                    if (!dd) return 'no-dd';
+                    for (const el of dd.querySelectorAll('span, div')) {
+                        if (el.children.length !== 0) continue;
+                        const t = (el.innerText || '').trim();
+                        if (t === modelId) {
+                            el.click();
+                            return 'clicked';
+                        }
                     }
-                }
-                return 'not-found';
-            }""",
-            model_id,
-        )
-        if clicked == 'clicked':
-            await asyncio.sleep(0.6)
-            return
-
-        # Not in primary list.  Click "Expand more models" via Playwright
-        # native click (JS .click() does NOT trigger React's onClick here).
-        try:
-            await page.locator('text=Expand more models').first.click(timeout=5000)
-            await asyncio.sleep(1.5)
-        except Exception as exc:
-            logger.debug("qwen expand click failed: %s", exc)
-            await page.evaluate(CLICK_EXPAND)
-            await asyncio.sleep(1.5)
+                    return 'not-found';
+                }""",
+                model_id,
+            )
+            if clicked == 'clicked':
+                await asyncio.sleep(0.6)
+                return True
+            if clicked == 'not-found':
+                # Need to expand first.
+                try:
+                    await page.locator('text=Expand more models').first.click(timeout=5000)
+                    await asyncio.sleep(1.5)
+                except Exception as exc:
+                    logger.debug("qwen expand click failed: %s", exc)
+                    await page.evaluate(CLICK_EXPAND)
+                    await asyncio.sleep(1.5)
+                # re-check after expand
+                clicked2 = await page.evaluate(
+                    """(modelId) => {
+                        const dd = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden)');
+                        if (!dd) return 'no-dd';
+                        for (const el of dd.querySelectorAll('span, div')) {
+                            if (el.children.length !== 0) continue;
+                            const t = (el.innerText || '').trim();
+                            if (t === modelId) {
+                                el.click();
+                                return 'clicked';
+                            }
+                        }
+                        return 'not-found';
+                    }""",
+                    model_id,
+                )
+                if clicked2 == 'clicked':
+                    await asyncio.sleep(0.6)
+                    return True
+                # Last attempt: take a debug snapshot of the available options.
+                available = await page.evaluate(
+                    """() => Array.from(document.querySelectorAll(
+                        '.ant-dropdown:not(.ant-dropdown-hidden) span, .ant-dropdown:not(.ant-dropdown-hidden) div'
+                    )).filter(el => el.children.length === 0 && el.innerText && el.innerText.trim().length > 0 && el.innerText.trim().length < 60)
+                      .map(el => el.innerText.trim())
+                      .filter(t => /^Qwen/i.test(t))
+                      .slice(0, 30)"""
+                )
+                logger.warning(
+                    "qwen: model %r not found in dropdown (attempt %d); "
+                    "available (first 30): %s",
+                    model_id, attempt + 1, available,
+                )
+                # close dropdown before next attempt
+                try:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+            else:  # 'no-dd'
+                logger.debug("qwen: dropdown not visible on attempt %d", attempt + 1)
+                await asyncio.sleep(1.0)
+        logger.error("qwen: gave up selecting %r after 3 attempts", model_id)
+        return False
 
         # Try again after expand.
         clicked2 = await page.evaluate(

@@ -149,26 +149,64 @@ async def fetch_session_from_server(
     return None
 
 
+# Some bridge-server profiles (e.g. arena) keep cookies for OTHER providers
+# in the same Chromium user data dir.  When /get-session/<provider> returns
+# 404 we can still drive that provider using a fallback session, because
+# the cookie blob is identical.
+PROVIDER_FALLBACKS: Dict[str, List[str]] = {
+    "kimi": ["arena", "qwen"],
+    "deepseek": ["arena", "qwen"],
+}
+
+
 async def get_effective_session(
     manager: SessionManager, provider: str
 ) -> Optional[Dict[str, Any]]:
-    """Return usable session or raise HTTPException(503)."""
+    """Return usable session for ``provider`` or None.
+
+    Resolution order:
+      1. Local encrypted cache  (``sessions/<provider>.bin``)
+      2. Direct fetch            (``GET /get-session/<provider>``)
+      3. Fallback chain          (e.g. arena session used for kimi)
+      4. Stale local cache       (graceful degradation, WARNING)
+    """
+    # 1. local cache
     session = manager.load_session(provider)
     if session and not manager.is_expired(session):
         return session
-    # try refresh from server
+    # 2. direct fetch from bridge-server
     fresh = await fetch_session_from_server(provider)
-    if fresh is not None and (fresh.get("cookies") or provider == "deepseek"):
+    if fresh is not None and (fresh.get("cookies") or provider in {"deepseek", "kimi"}):
         manager.save_session(provider, fresh)
         logger.info("refreshed session for %s from bridge-server", provider)
         return fresh
-    # graceful degradation: keep stale local session
+    # 3. fallback chain (other providers may carry the same cookie blob)
+    for fallback in PROVIDER_FALLBACKS.get(provider, []):
+        # try local first
+        fb_local = manager.load_session(fallback)
+        if fb_local and not manager.is_expired(fb_local):
+            logger.info(
+                "using fallback provider %r session for %s (shared profile)",
+                fallback, provider,
+            )
+            return fb_local
+        # then remote
+        fb_remote = await fetch_session_from_server(fallback)
+        if fb_remote is not None and fb_remote.get("cookies"):
+            logger.info(
+                "fetched fallback provider %r session for %s (shared profile)",
+                fallback, provider,
+            )
+            # cache under BOTH names so subsequent lookups are O(1)
+            manager.save_session(fallback, fb_remote)
+            manager.save_session(provider, fb_remote)
+            return fb_remote
+    # 4. graceful degradation: stale local
     if session:
         logger.warning(
             "using STALE local session for %s (bridge-server unreachable)", provider
         )
         return session
-    # no local + no remote
     return None
 
 
@@ -195,7 +233,7 @@ async def update_model_cache(manager: SessionManager) -> Dict[str, Any]:
     providers = cache.get("providers") or {}
     results: Dict[str, Any] = {}
 
-    for provider_name in ("arena", "qwen", "deepseek"):
+    for provider_name in ("arena", "qwen", "deepseek", "kimi"):
         prev = providers.get(provider_name, {"status": "unknown", "models": []})
         results[provider_name] = {
             "status": "error",
@@ -306,7 +344,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     manager = SessionManager(fernet)
     app.state.session_manager = manager
     # Initial cache refresh BEFORE the first request so /v1/models is ready.
-    await update_model_cache(manager)
+    try:
+        await update_model_cache(manager)
+    except Exception as exc:
+        # Don't crash the server if startup discovery fails for any provider —
+        # the previous model.json (if any) will be loaded by /v1/models.
+        logger.warning("startup cache refresh failed (continuing): %s", exc)
     app.state.cache_task = asyncio.create_task(model_cache_loop(manager))
     try:
         yield
@@ -436,7 +479,10 @@ async def chat_completions(req: ChatRequest, request: Request) -> Any:
     model_id = parsed["model_id"]
     modality = parsed.get("modality")
 
-    pc = ProviderRegistry.get_provider_class_or_404(provider_name)
+    try:
+        pc = ProviderRegistry.get_provider_class_or_404(provider_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")

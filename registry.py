@@ -142,5 +142,8 @@ class ProviderRegistry:
         return pc
 
 
-# Trigger discovery once at import time so /v1/models works immediately.
-ProviderRegistry.known_providers()
+# NOTE: discovery is triggered by client.py at startup, not at import time,
+# to avoid circular imports between providers/*.py and registry.py.
+# Each provider file does ``from registry import ProviderRegistry`` at the
+# top — this works because registry has no providers.* import at module level.
+
