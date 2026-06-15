@@ -1,27 +1,44 @@
-# 📱 Bridge-Client (Persistence Mode) - Installation Guide
+# 📱 Bridge-Client (OpenAI-Compatible Gateway)
 
-This client uses a **State-Persistence** mechanism. It syncs sessions from the Bridge-Server once and stores them locally.
+This package is the automation engine and gateway for the Bridge-Project.
 
-## 🚀 How it Works
-1. **Sync:** The client contacts `BRIDGE_SERVER_URL` to get cookies.
-2. **Cache:** Cookies are saved in the `/sessions` folder.
-3. **Offline Execution:** Once synced, the client no longer needs the server to be online to make requests.
-4. **Auto-Refresh:** If a request fails due to authorization, the client automatically attempts to re-sync with the server.
+## Files
 
-## 🛠️ Installation
-1. `pip install -r requirements.txt`
-2. Edit `.env` $\rightarrow$ `BRIDGE_SERVER_URL=http://host.zerotier.my.id:9877`
+- `client.py` — entry point to start the FastAPI gateway.
+- `config.py` — centralized configuration loaded from `.env`.
+- `session_manager.py` — fetch, encrypt, and cache bridge-server sessions.
+- `browser_manager.py` — Playwright lifecycle, stealth, and context-per-request isolation.
+- `model_cache.py` — background model discovery and `model.json` cache.
+- `gateway.py` — FastAPI app with `/v1/chat/completions`, `/v1/models`, `/health`.
+- `cli.py` — HTTP-based CLI for one-shot and interactive chat.
 
-## ⚡ Usage
+## Start the Gateway
+
+```bash
+python client/client.py
+```
+
+## Use the CLI
+
+```bash
+python -m client.cli models
+python -m client.cli chat -m bridge/qwen/qwen-max "Hello"
+python -m client.cli chat -m bridge/deepseek/deepseek-v3 -i
+```
+
+## Programmatic Example
+
 ```python
-from client import BridgeClient
 import asyncio
+from client.session_manager import SessionManager
+from providers.qwen import QwenProvider
 
-async def run():
-    client = BridgeClient()
-    # Will sync from server on first run, then use local cache
-    res = await client.call_bridge("bridge/arena/gpt-4o", {"messages": [...]})
-    print(res)
+async def main():
+    session = await SessionManager().get_effective_session("qwen")
+    provider = QwenProvider(session)
+    response = await provider.execute("qwen-max", "Hello", {"thinking": "fast"})
+    print(response)
+    await provider.cleanup()
 
-asyncio.run(run())
+asyncio.run(main())
 ```

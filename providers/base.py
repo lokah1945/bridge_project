@@ -1,57 +1,126 @@
+"""Base provider interface for bridge automation.
 
+The contract is intentionally kept simple to satisfy the request that
+providers expose execute(model_id, prompt, params) -> str. The gateway
+converts the OpenAI messages[] into a single prompt string and can chunk
+the returned string into an SSE stream.
+"""
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
-import asyncio
-from playwright.async_api import async_playwright, Page, BrowserContext
+
+from playwright.async_api import Page, BrowserContext
+
+from client import browser_manager
+from client.config import settings
+
 
 class BaseProvider(ABC):
+    """Abstract base class for all provider automations."""
+
     def __init__(self, session_data: Dict[str, Any]):
-        self.session_data = session_data
-        self.cookies = session_data.get("cookies", [])
-        self.user_agent = session_data.get("user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-        self.browser = None
-        self.context = None
+        self.session_data = session_data or {}
+        self.cookies = self.session_data.get("cookies", [])
+        self.user_agent = self.session_data.get(
+            "user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36",
+        )
+        self.headers = self.session_data.get("headers", {})
+        self.context: Optional[BrowserContext] = None
+        self.page: Optional[Page] = None
 
-    async def _setup_browser(self) -> Page:
-        if not self.browser:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=['--disable-blink-features=AutomationControlled']
-            )
-            self.context = await self.browser.new_context(user_agent=self.user_agent)
-            if self.cookies:
-                await self.context.add_cookies(self.cookies)
+    async def _setup(self, url: str) -> Page:
+        """Create a fresh page, inject session, and navigate to the provider URL."""
+        self.context = await browser_manager.new_context(self.session_data)
+        self.page = await self.context.new_page()
+        await browser_manager._apply_stealth(self.page)
 
-        page = await self.context.new_page()
-        
-        # Manual Stealth Implementation via CDP
-        cdp = await page.context().new_CDPSession(page)
-        await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-            'source': '''
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                Object.defineProperty(window, 'chrome', {get: () => ({runtime: {})} );
-            '''
-        })
-        await cdp.send('Network.setExtraHTTPHeaders', {
-            'headers': {
-                'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A brand";v="//"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-            }
-        })
-        return page
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        return self.page
 
     @abstractmethod
     async def list_models(self, **kwargs) -> List[str]:
+        """Return a list of human-readable model names."""
         pass
 
     @abstractmethod
-    async def execute(self, model_id: str, prompt: str, params: Dict[str, Any]) -> str:
+    async def execute(
+        self, model_id: str, prompt: str, params: Dict[str, Any]
+    ) -> str:
+        """Execute a chat request and return the full response text."""
         pass
 
-    async def cleanup(self):
-        if self.browser:
-            await self.browser.close()
-            await self.playwright.stop()
+    async def cleanup(self) -> None:
+        """Close the isolated browser context for this request."""
+        if self.page:
+            try:
+                await self.page.close()
+            except Exception:
+                pass
+            self.page = None
+        if self.context:
+            await browser_manager.close_context(self.context)
+            self.context = None
+
+    async def _safe_click(
+        self,
+        selector: str,
+        timeout: float = 5000,
+        fallback_text: Optional[str] = None,
+    ) -> bool:
+        """Try to click a selector; optionally fall back to text-based click."""
+        page = self.page
+        if page is None:
+            return False
+
+        try:
+            await page.click(selector, timeout=timeout)
+            return True
+        except Exception as e:
+            if settings.debug:
+                print(f"[BaseProvider] click selector failed '{selector}': {e}")
+
+        if fallback_text:
+            try:
+                await page.click(f'text="{fallback_text}"', timeout=timeout)
+                return True
+            except Exception as e:
+                if settings.debug:
+                    print(f"[BaseProvider] click fallback text failed '{fallback_text}': {e}")
+        return False
+
+    async def _fill_textarea(self, prompt: str) -> bool:
+        """Find and fill the main chat textarea/input."""
+        page = self.page
+        if page is None:
+            return False
+
+        selectors = [
+            "textarea[placeholder*='message']",
+            "textarea[placeholder*='ask']",
+            "textarea",
+            "[contenteditable='true']",
+            "input[type='text'][placeholder*='message']",
+            "input[type='text']",
+        ]
+        for sel in selectors:
+            try:
+                el = await page.wait_for_selector(sel, timeout=3000, state="visible")
+                if el is None:
+                    continue
+                tag = await el.evaluate("el => el.tagName.toLowerCase()")
+                if tag == "textarea" or tag == "input":
+                    await el.fill("")
+                    await el.fill(prompt)
+                else:
+                    await el.fill("")
+                    await el.fill(prompt)
+                return True
+            except Exception:
+                continue
+        return False

@@ -1,5 +1,13 @@
-httpx
-python-dotenv
+playwright
+playwright-stealth
 fastapi
 uvicorn
+httpx
+requests
+python-dotenv
 cryptography
+pydantic
+pydantic-settings
+rich
+typer
+pytest

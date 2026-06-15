@@ -1,50 +1,135 @@
+"""Bridge-Server (Python/FastAPI) — Session Hub.
 
+Runs a headfull browser on Windows and exposes:
+  GET /get-session/{provider}
+  POST /invoke
+  GET /health
+
+The browser context is kept alive so cookies remain valid. Callers
+(bridge-clients) fetch the live cookies + headers + user-agent via
+/get-session/{provider}.
+"""
 import asyncio
 import json
+import os
+from typing import Any, Dict
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
 from registry import registry
-from typing import Any, Dict
+from providers.arena import ArenaProvider
+from providers.qwen import QwenProvider
+from providers.deepseek import DeepSeekProvider
+
+load_dotenv()
+
+PORT = int(os.getenv("BRIDGE_SERVER_PORT", 99876))
+REMOTE_DEBUG_PORT = int(os.getenv("REMOTE_DEBUG_PORT", 99876))
+HEADLESS = os.getenv("BROWSER_HEADLESS", "false").lower() in ("true", "1", "yes")
+
+# Register all providers so /invoke can dispatch dynamically.
+registry.register("arena", ArenaProvider)
+registry.register("qwen", QwenProvider)
+registry.register("deepseek", DeepSeekProvider)
 
 app = FastAPI(title="Bridge-Server Hub")
 
-# Global State
-browser_context = {
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+browser_context: Dict[str, Any] = {
+    "playwright": None,
     "browser": None,
     "context": None,
     "sessions": {
-        "arena": {"cookies": [], "user_agent": "Mozilla/5.0..."},
-        "qwen": {"cookies": [], "user_agent": "Mozilla/5.0..."},
-    }
+        "arena": {
+            "cookies": [],
+            "user_agent": _DEFAULT_USER_AGENT,
+            "headers": {"Accept-Language": "en-US,en;q=0.9"},
+        },
+        "qwen": {
+            "cookies": [],
+            "user_agent": _DEFAULT_USER_AGENT,
+            "headers": {"Accept-Language": "en-US,en;q=0.9"},
+        },
+        "deepseek": {
+            "cookies": [],
+            "user_agent": _DEFAULT_USER_AGENT,
+            "headers": {"Accept-Language": "en-US,en;q=0.9"},
+        },
+    },
 }
+
 
 @app.on_event("startup")
 async def startup():
-    # In Windows Headfull, this would launch a real browser
-    # --remote-debugging-port=99876 allows external attachment
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(
-        headless=False, # Headfull as per Master Prompt
-        args=["--remote-debugging-port=99876"]
+        headless=HEADLESS,
+        args=[
+            f"--remote-debugging-port={REMOTE_DEBUG_PORT}",
+            "--start-maximized",
+            "--disable-blink-features=AutomationControlled",
+        ],
     )
-    context = await browser.new_context()
+    context = await browser.new_context(
+        user_agent=_DEFAULT_USER_AGENT,
+        viewport=None,
+        locale="en-US",
+    )
+    browser_context["playwright"] = pw
     browser_context["browser"] = browser
     browser_context["context"] = context
-    print("[Bridge-Server] Hub started. Browser active on port 99876.")
+    print(f"[Bridge-Server] Hub started on port {PORT}. Browser active on port {REMOTE_DEBUG_PORT}.")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    if browser_context["context"]:
+        await browser_context["context"].close()
+    if browser_context["browser"]:
+        await browser_context["browser"].close()
+    if browser_context["playwright"]:
+        await browser_context["playwright"].stop()
+    print("[Bridge-Server] Hub stopped.")
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "online",
+        "browser_ready": browser_context["browser"] is not None,
+        "providers": list(browser_context["sessions"].keys()),
+    }
+
 
 @app.get("/get-session/{provider}")
 async def get_session(provider: str):
     provider = provider.lower()
     if provider not in browser_context["sessions"]:
-        raise HTTPException(status_code=404, detail="Provider session not found")
-    
+        raise HTTPException(status_code=404, detail=f"Provider session '{provider}' not found")
+
+    ctx = browser_context["context"]
+    if ctx is None:
+        raise HTTPException(status_code=503, detail="Browser context not ready")
+
+    # Refresh live cookies from the active browser context.
+    cookies = await ctx.cookies()
+    browser_context["sessions"][provider]["cookies"] = cookies
     return browser_context["sessions"][provider]
+
 
 @app.post("/invoke")
 async def invoke_bridge(request: Request):
+    """Direct invocation endpoint (used mostly for testing)."""
     body = await request.json()
-    target = body.get("target") # Format: bridge/provider/model
+    target = body.get("target")  # Format: bridge/provider/model
     payload = body.get("payload", {})
 
     if not target or "/" not in target:
@@ -57,22 +142,22 @@ async def invoke_bridge(request: Request):
     provider_name = parts[1]
     model_id = parts[2]
 
-    # 1. Dynamic Lookup Provider
     provider_class = registry.get_provider_class(provider_name)
     if not provider_class:
         raise HTTPException(status_code=404, detail=f"Provider '{provider_name}' not found")
 
-    # 2. Inject Session Data
     session_data = browser_context["sessions"].get(provider_name, {})
     provider_instance = provider_class(session_data)
 
-    # 3. Execute
     try:
-        result = await provider_instance.handle_request(model_id, payload)
-        return result
+        result = await provider_instance.execute(model_id, payload.get("prompt", ""), payload)
+        return {"result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await provider_instance.cleanup()
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=99876)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

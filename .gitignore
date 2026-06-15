@@ -9,3 +9,12 @@ node_modules/
 .cache/
 .local/
 .git/
+
+# Debug artifacts and scratch files
+*.log
+*.png
+*.html
+*.zip
+*.enc
+chat_history.txt
+network_requests.txt
