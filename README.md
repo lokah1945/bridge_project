@@ -72,19 +72,42 @@ The system is split into two components to maximize stealth and bypass bot detec
 ## 🧪 CLI Examples
 
 ```bash
+# Install CLI
+pip install -e .
+# or use ./bin/bridge-cli
+
+# Check health
+bridge-cli health
+
 # List models
-python -m client.cli models
+bridge-cli models
 
 # One-shot chat
-python -m client.cli chat -m bridge/qwen/qwen-max "What is the capital of France?"
+bridge-cli chat -m bridge/qwen/qwen-max "What is the capital of France?"
 
 # Interactive REPL
-python -m client.cli chat -m bridge/deepseek/deepseek-v3 -i
+bridge-cli chat -m bridge/deepseek/deepseek-v3 -i
 
 # With extra provider params
-python -m client.cli chat -m bridge/arena/text/gpt-4o \
+bridge-cli chat -m bridge/arena/text/gpt-4o \
   --param temporary_chat=true \
   "Explain quantum computing"
+
+# Session status
+bridge-cli session status
+```
+
+## 🚀 Deployment
+
+### Docker
+```bash
+docker-compose up -d --build
+```
+
+### Systemd
+```bash
+sudo cp systemd/bridge-client.service /etc/systemd/system/
+sudo systemctl enable --now bridge-client
 ```
 
 ## 📚 More Docs

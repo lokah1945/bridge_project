@@ -18,3 +18,7 @@ node_modules/
 *.enc
 chat_history.txt
 network_requests.txt
+
+# Keep production artifacts tracked
+!artifacts/*.log
+!artifacts/*.txt

@@ -20,6 +20,6 @@ from client.config import settings
 from client.gateway import app
 
 if __name__ == "__main__":
-    print(f"[Bridge-Client] Starting gateway on 0.0.0.0:{settings.port}")
+    print(f"[Bridge-Client] Starting gateway on {settings.host}:{settings.port}")
     print(f"[Bridge-Client] Bridge-Server URL: {settings.bridge_server_url}")
-    uvicorn.run(app, host="0.0.0.0", port=settings.port)
+    uvicorn.run(app, host=settings.host, port=settings.port)

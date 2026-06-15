@@ -1,0 +1,17 @@
+[Unit]
+Description=Bridge-Client OpenAI Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/bridge_project
+EnvironmentFile=/opt/bridge_project/.env
+ExecStart=/usr/bin/python3 /opt/bridge_project/client/client.py
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

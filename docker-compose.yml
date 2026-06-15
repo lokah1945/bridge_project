@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  bridge-client:
+    build: .
+    container_name: bridge-client
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./sessions:/app/sessions
+      - ./model.json:/app/model.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

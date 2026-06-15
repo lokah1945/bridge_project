@@ -93,23 +93,33 @@ for chunk in response:
 ## 🖥️ CLI
 
 ```bash
+# Install CLI
+pip install -e .
+
+# Check health
+bridge-cli health
+
 # List available models
-python -m client.cli models
+bridge-cli models
 
 # One-shot
-python -m client.cli chat -m bridge/qwen/qwen-max "Hello"
+bridge-cli chat -m bridge/qwen/qwen-max "Hello"
 
 # Interactive REPL
-python -m client.cli chat -m bridge/deepseek/deepseek-v3 -i
+bridge-cli chat -m bridge/deepseek/deepseek-v3 -i
 
 # With system prompt and extra params
-python -m client.cli chat -m bridge/arena/text/gpt-4o \
+bridge-cli chat -m bridge/arena/text/gpt-4o \
   --system "You are a coding assistant" \
   --param temporary_chat=true \
   "Write a Python function to sort a list"
 
 # Point CLI at a remote gateway
-python -m client.cli --base-url http://remote:8000 chat -m bridge/qwen/qwen-max "Hi"
+export BRIDGE_API_BASE_URL=http://remote:8000
+bridge-cli chat -m bridge/qwen/qwen-max "Hi"
+
+# Session status
+bridge-cli session status
 ```
 
 ## 🛡️ Feature Matrix (`extra_params`)

@@ -1,0 +1,35 @@
+usage: cli.py [-h] [--base-url BASE_URL] [--api-key API_KEY]
+              {health,models,chat,session} ...
+
+Bridge-Client CLI
+
+positional arguments:
+  {health,models,chat,session}
+    health              Check gateway health
+    models              List available models
+    chat                Send a chat request
+    session             Session management
+
+options:
+  -h, --help            show this help message and exit
+  --base-url BASE_URL   Gateway base URL
+  --api-key API_KEY     API key (or use BRIDGE_API_KEY env)
+
+usage: cli.py chat [-h] -m MODEL [-i] [--system SYSTEM] [--stream]
+                   [--no-stream] [--param PARAM]
+                   [prompt]
+
+positional arguments:
+  prompt             Prompt text (for one-shot mode)
+
+options:
+  -h, --help         show this help message and exit
+  -m, --model MODEL  Model ID, e.g. bridge/qwen/qwen-max
+  -i, --interactive  Interactive REPL mode
+  --system SYSTEM    System prompt
+  --stream           Stream response
+  --no-stream        Non-stream response
+  --param PARAM      Extra params as key=value (repeatable)
+
+=== Attempting models command (no gateway running) ===
+Failed to fetch models: [Errno 111] Connection refused

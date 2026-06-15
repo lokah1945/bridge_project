@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bridge-client"
+version = "2.0.0"
+description = "OpenAI-compatible gateway and CLI for Bridge-Project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright",
+    "playwright-stealth",
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "requests",
+    "python-dotenv",
+    "cryptography",
+    "pydantic",
+    "pydantic-settings",
+    "rich",
+]
+
+[project.scripts]
+bridge-cli = "client.cli:main"
+bridge-client = "client.client:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
