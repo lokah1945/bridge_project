@@ -1,28 +1,25 @@
-"""Bridge-Server (Python/FastAPI) — Session Hub.
+"""Bridge-Server (Python/FastAPI) — Alternative Session Hub.
 
-Runs a headfull browser on Windows and exposes:
+This is a Python-based alternative to `server/server.js`. It runs a headfull
+browser on Windows and exposes:
   GET /get-session/{provider}
   POST /invoke
   GET /health
 
-The browser context is kept alive so cookies remain valid. Callers
-(bridge-clients) fetch the live cookies + headers + user-agent via
-/get-session/{provider}.
+The browser context is kept alive so cookies remain valid. The recommended
+Windows server is `server/server.js` (Node.js) because it can use the full
+puppeteer-extra-plugin-stealth stack. Use this Python server only if you
+prefer a Python-only environment.
 """
-import asyncio
 import json
 import os
 from typing import Any, Dict
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-
-from registry import registry
-from providers.arena import ArenaProvider
-from providers.qwen import QwenProvider
-from providers.deepseek import DeepSeekProvider
+from playwright_stealth import Stealth
 
 load_dotenv()
 
@@ -30,12 +27,7 @@ PORT = int(os.getenv("BRIDGE_SERVER_PORT", 99876))
 REMOTE_DEBUG_PORT = int(os.getenv("REMOTE_DEBUG_PORT", 99876))
 HEADLESS = os.getenv("BROWSER_HEADLESS", "false").lower() in ("true", "1", "yes")
 
-# Register all providers so /invoke can dispatch dynamically.
-registry.register("arena", ArenaProvider)
-registry.register("qwen", QwenProvider)
-registry.register("deepseek", DeepSeekProvider)
-
-app = FastAPI(title="Bridge-Server Hub")
+app = FastAPI(title="Bridge-Server Hub (Python)")
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -82,11 +74,14 @@ async def startup():
         user_agent=_DEFAULT_USER_AGENT,
         viewport=None,
         locale="en-US",
+        timezone_id="America/New_York",
     )
+    await Stealth().apply_stealth_async(context)
+
     browser_context["playwright"] = pw
     browser_context["browser"] = browser
     browser_context["context"] = context
-    print(f"[Bridge-Server] Hub started on port {PORT}. Browser active on port {REMOTE_DEBUG_PORT}.")
+    print(f"[Bridge-Server] Python hub started on port {PORT}. Browser active on port {REMOTE_DEBUG_PORT}.")
 
 
 @app.on_event("shutdown")
@@ -97,7 +92,7 @@ async def shutdown():
         await browser_context["browser"].close()
     if browser_context["playwright"]:
         await browser_context["playwright"].stop()
-    print("[Bridge-Server] Hub stopped.")
+    print("[Bridge-Server] Python hub stopped.")
 
 
 @app.get("/health")
@@ -119,7 +114,6 @@ async def get_session(provider: str):
     if ctx is None:
         raise HTTPException(status_code=503, detail="Browser context not ready")
 
-    # Refresh live cookies from the active browser context.
     cookies = await ctx.cookies()
     browser_context["sessions"][provider]["cookies"] = cookies
     return browser_context["sessions"][provider]
@@ -128,8 +122,18 @@ async def get_session(provider: str):
 @app.post("/invoke")
 async def invoke_bridge(request: Request):
     """Direct invocation endpoint (used mostly for testing)."""
+    # Lazy import to avoid loading client-side browser automation on startup.
+    from registry import registry
+    from providers.arena import ArenaProvider
+    from providers.qwen import QwenProvider
+    from providers.deepseek import DeepSeekProvider
+
+    registry.register("arena", ArenaProvider)
+    registry.register("qwen", QwenProvider)
+    registry.register("deepseek", DeepSeekProvider)
+
     body = await request.json()
-    target = body.get("target")  # Format: bridge/provider/model
+    target = body.get("target")
     payload = body.get("payload", {})
 
     if not target or "/" not in target:

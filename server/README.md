@@ -1,35 +1,54 @@
-# 🖥️ Bridge-Server (Node.js) - Installation Guide
+# 🖥️ Bridge-Server (Node.js) — Recommended Windows Session Hub
 
-This folder contains the original Node.js implementation of the Bridge-Server. It is an alternative to the Python-based `bridge_server.py` in the repo root.
+This folder contains the **recommended** Bridge-Server implementation for Windows. It uses `playwright-extra` + `puppeteer-extra-plugin-stealth` + CDP to keep a logged-in browser session alive and serve live cookies via `GET /get-session/{provider}`.
+
+## Why Node.js on Windows?
+
+- Supports `puppeteer-extra-plugin-stealth` (Node-only).
+- Persistent browser profiles (`browser_sessions/`).
+- Headfull browser for manual login.
+- The server only needs to be active during login and when the client refreshes sessions.
 
 ## 🛠️ Requirements
 - Node.js 18+
-- Windows Server (or any machine that can run a headfull browser)
+- Windows Server or Windows desktop (with ZeroTier if accessing remotely)
 
 ## 🚀 Installation
 
-1. **Extract the folder.**
-2. **Install Dependencies:**
-   ```bash
-   npm install
-   ```
-3. **Install Browser:**
-   ```bash
-   npx playwright install chromium
-   ```
-4. **Configure:**
-   Edit `.env` to set the `PORT` (Default: 9877).
-
-## ⚡ Activation
-Run the server:
 ```bash
-npm start
+cd server
+npm install
+npx playwright install chromium
 ```
 
-## 🔑 How it Works
-1. The server opens a browser.
-2. You can manually log in to providers (Arena, Qwen, DeepSeek) via the browser window.
-3. The **Bridge-Client** will call `GET /get-session/<provider>` to fetch the latest cookies.
+## ⚡ Activation
 
-## 📝 Note
-The rebuilt client also supports the Python server in the repo root (`bridge_server.py` on port 99876). Use whichever matches your environment.
+```bash
+node server.js
+```
+
+Then in the terminal menu:
+1. Add a profile (e.g., `Google83`).
+2. Start the server.
+3. A browser window opens. Log in to Arena, Qwen, and DeepSeek manually.
+4. The client will fetch cookies from `http://<windows-ip>:9877/get-session/{provider}`.
+
+## 🔑 Login URLs
+
+The server also exposes an `/open` endpoint to navigate the browser to a provider:
+
+```
+http://localhost:9877/open?url=https://arena.ai/text/direct
+http://localhost:9877/open?url=https://chat.qwen.ai/
+http://localhost:9877/open?url=https://chat.deepseek.com/
+```
+
+## 📡 API Endpoints
+
+- `GET /health` — server and browser status.
+- `GET /get-session/:provider` — live cookies + user-agent + headers for `arena`, `qwen`, `deepseek`.
+- `GET /open?url=...` — open a URL in the server browser.
+
+## 📝 Python Alternative
+
+If you prefer a Python-only environment, use `bridge_server.py` in the repo root (port **99876**). It uses `playwright` + `playwright-stealth` + CDP.

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     """All settings loaded from .env (with sensible defaults)."""
 
     bridge_server_url: str = Field(
-        default="http://host.zerotier.my.id:99876",
+        default="http://host.zerotier.my.id:9877",
         alias="BRIDGE_SERVER_URL",
     )
     port: int = Field(default=8000, alias="PORT")
