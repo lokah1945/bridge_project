@@ -23,7 +23,7 @@ File di root mayoritas adalah **skrip eksplorasi/prototipe yang tidak di-import 
 
 | File | Keterangan | Digunakan client? | Rekomendasi |
 |------|------------|-------------------|-------------|
-| `bridge_server.py` | Prototipe Python/FastAPI bridge-server port 99876 | Tidak | Pindah ke `_legacy/` atau hapus. |
+| `bridge_server.py` | Alternatif Python/FastAPI bridge-server port 9877 | **Ya (alternatif)** | Pertahankan sebagai alternatif Node.js server. |
 | `gateway.py` | Prototipe gateway Arena-only (root), beda dengan `client/client.py` | Tidak | Pindah ke `_legacy/`. |
 | `engine.py` | Prototipe `ArenaEngine` — berisi banyak bug (BUG-1 s/d BUG-10 di master prompt) | Tidak | Pindah ke `_legacy/`. |
 | `registry.py` | Registry provider, di-import `client/client.py` | **Ya** | Pertahankan / sempurnakan. |
@@ -71,7 +71,7 @@ Terdapat **dua kandidat bridge-server** di repo:
 - **Kekurangan nyata**: `sessionStore` hardcode hanya untuk `arena` dan `qwen`; **tidak ada `deepseek`**. `user_agent` qwen adalah literal `"..."` (placeholder). Login manual; tidak ada mekanisme otomatis load session/login tersimpan.
 
 ### 2.2 `bridge_server.py` (Python / FastAPI)
-- Port: **99876**
+- Port: **9877** (default, sama dengan server.js; hanya jalankan satu server pada satu waktu)
 - `browser_context["sessions"]` berisi placeholder statis:
   - `cookies: []` kosong
   - `user_agent: "Mozilla/5.0..."` literal tidak lengkap
@@ -82,7 +82,7 @@ Terdapat **dua kandidat bridge-server** di repo:
 
 ### Rekomendasi Server
 - **Server yang aktif kemungkinan besar adalah `server/server.js`**, karena cocok dengan `.env.example` (`BRIDGE_SERVER_URL=...:9877`) dan `server/README.md`.
-- `bridge_server.py` adalah prototipe yang tidak pernah dijalankan dalam produksi (berbeda port, placeholder sessions).
+- `bridge_server.py` disempurnakan menjadi alternatif Python dan default port-nya disamakan menjadi **9877**.
 - Perbaikan di sisi **server** (menambah `deepseek`, memperbaiki user_agent qwen) perlu dilakukan agar bridge-client bisa fetch session lengkap untuk ketiga provider. Namun perbaikan ini harus dikonfirmasi user, sesuai catatan Bagian 8 Master Prompt.
 
 ---
@@ -162,8 +162,7 @@ Kekurangan:
 
 Sebelum rebuild bridge-client, beberapa hal di sisi server perlu dikonfirmasi karena client bergantung pada response `/get-session/{provider}`:
 
-1. **Server mana yang aktif?** `server/server.js` (port 9877) atau `bridge_server.py` (port 99876)?  
-   Asumsi audit: `server/server.js` karena cocok `.env.example`.
+1. **Server yang dipakai**: `server/server.js` (Node.js, recommended) atau `bridge_server.py` (Python, alternative)? Kedua-duanya default port **9877**.
 
 2. **Apakah `deepseek` sudah didaftarkan di `server.js`?** Saat ini `sessionStore` hanya `arena` dan `qwen`; client akan gagal fetch session untuk `deepseek` (404).
 
@@ -180,7 +179,7 @@ Berikut ringkasan rencana rebuild berdasarkan hasil audit. Detail lengkap ada di
 ### Fase 1 — Konfigurasi & Dependency
 - Merge `client/requirements.txt` + `requirements.txt` root; tambah `cryptography`, `python-dotenv`, `httpx`, `pydantic-settings` (opsional), `apscheduler` (opsional). Pastikan `playwright-stealth` kompatibel.
 - Buat `client/config.py` sentral (Pydantic Settings / `python-dotenv`).
-- Perbaiki konflik port: hapus/abaikan `bridge_server.py` (port 99876), gunakan `server/server.js` (9877).
+- Perbaiki port agar seragam: `server/server.js` dan `bridge_server.py` default **9877**. Hanya satu server yang berjalan pada satu waktu.
 
 ### Fase 2 — Session Manager
 - Sempurnakan `client/session_manager.py`: fetch `/get-session/{provider}`, encrypt Fernet, simpan `sessions/{provider}.enc`, TTL auto-refresh, fallback ke cache lokal jika server sementara offline.
@@ -232,9 +231,9 @@ Berikut ringkasan rencana rebuild berdasarkan hasil audit. Detail lengkap ada di
 
 Sebelum melanjutkan ke Fase 1, mohon konfirmasi hal-hal berikut:
 
-1. **Server aktif**: Apakah benar yang berjalan adalah `server/server.js` di port 9877? Ataukah `bridge_server.py` di port 99876?
+1. **Server yang dipakai**: `server/server.js` (Node.js, recommended) atau `bridge_server.py` (Python, alternative)? Kedua-duanya default port **9877**. Hanya satu yang boleh berjalan pada satu waktu.
 2. **Izinkan perbaikan server**: Bolehkah saya memperbaiki `server/server.js` (tambah `deepseek`, perbaiki `user_agent` qwen, dll.)? Atau client-only?
-3. **Scope cleanup root**: Bolehkah file prototipe root (`engine.py`, `gateway.py`, `bridge_server.py`, `arena_cli.py`, `discovery_*.py`, `dom_probe.py`, `dump_text.py`, `count_models.py`, `test_all_models.py`, `bootstrap_cache.py`, zip, log, png, html) dipindah ke `_legacy/` dan dihapus dari tracking git?
+3. **Scope cleanup root**: File prototipe root sudah dipindah ke `_legacy/` dan file log/png/html/zip sudah dihapus dari tracking git. `bridge_server.py` tetap dipertahankan sebagai alternatif server.
 4. **Kontrak provider**: Apakah setuju mengubah `BaseProvider` dari `execute(model_id, prompt, params) -> str` menjadi `chat_stream(model_id, messages, extra_params) -> AsyncIterator[str]`? Ini memungkinkan streaming real-time dan full history.
 5. **Concurrency**: Preferensi desain concurrency — (a) satu browser context per request (paling sederhana, aman, tapi lebih lambat), atau (b) pool context dengan semaphore limit (lebih cepat, tapi perlu hati-hati state)?
 6. **Auth**: Apakah ingin `API_KEY` Bearer auth wajib untuk semua endpoint `/v1/*`, atau opsional saja (hanya jika `.env` di-set)?

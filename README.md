@@ -11,7 +11,7 @@ The system is split into two components to maximize stealth and bypass bot detec
 - **Platform**: Windows (headfull browser for manual login).
 - **Function**: Keeps browser sessions alive, performs manual login, and exposes `GET /get-session/{provider}` with live cookies + headers + user-agent.
 - **Recommended implementation**: `server/server.js` (Node.js) — uses `playwright-extra` + `puppeteer-extra-plugin-stealth` + CDP for full stealth.
-- **Alternative**: `bridge_server.py` (Python/FastAPI) — uses `playwright` + `playwright-stealth` + CDP. Port **99876**.
+- **Alternative**: `bridge_server.py` (Python/FastAPI) — uses `playwright` + `playwright-stealth` + CDP. Port **9877** by default (same as server.js, only run one at a time).
 - **Server only needs to be active during login and when the client refreshes sessions**. Once the client has cached an encrypted session, the server can be shut down until the session expires.
 
 ### 2. Bridge-Client (Linux — Runtime Engine)
@@ -45,9 +45,9 @@ The system is split into two components to maximize stealth and bypass bot detec
 ### Bridge-Server (Windows — alternative: `bridge_server.py`)
 1. `pip install -r requirements.txt`
 2. `python -m playwright install chromium`
-3. `python bridge_server.py` (port **99876**)
+3. `python bridge_server.py` (port **9877**)
 4. Log in manually via the opened browser window.
-5. Set `BRIDGE_SERVER_URL=...:99876` in the client `.env`.
+5. Set `BRIDGE_SERVER_URL=...:9877` in the client `.env`.
 
 ### Bridge-Client (Linux)
 1. Install Python 3.10+.

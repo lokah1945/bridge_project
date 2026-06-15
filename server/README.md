@@ -51,4 +51,4 @@ http://localhost:9877/open?url=https://chat.deepseek.com/
 
 ## 📝 Python Alternative
 
-If you prefer a Python-only environment, use `bridge_server.py` in the repo root (port **99876**). It uses `playwright` + `playwright-stealth` + CDP.
+If you prefer a Python-only environment, use `bridge_server.py` in the repo root (port **9877** by default). It uses `playwright` + `playwright-stealth` + CDP.

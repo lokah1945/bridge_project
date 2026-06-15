@@ -23,8 +23,8 @@ from playwright_stealth import Stealth
 
 load_dotenv()
 
-PORT = int(os.getenv("BRIDGE_SERVER_PORT", 99876))
-REMOTE_DEBUG_PORT = int(os.getenv("REMOTE_DEBUG_PORT", 99876))
+PORT = int(os.getenv("BRIDGE_SERVER_PORT", 9877))
+REMOTE_DEBUG_PORT = int(os.getenv("REMOTE_DEBUG_PORT", 9878))
 HEADLESS = os.getenv("BROWSER_HEADLESS", "false").lower() in ("true", "1", "yes")
 
 app = FastAPI(title="Bridge-Server Hub (Python)")

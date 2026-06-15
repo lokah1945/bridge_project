@@ -6,7 +6,7 @@ This guide covers configuration, API usage, and the CLI for the rebuilt bridge-c
 
 - **Bridge-Server** (Windows): keeps a logged-in browser session alive and serves live cookies via `GET /get-session/{provider}`.
   - **Recommended**: `server/server.js` (Node.js) on port **9877** — full stealth with `playwright-extra` + `puppeteer-extra-plugin-stealth`.
-  - **Alternative**: `bridge_server.py` (Python) on port **99876**.
+  - **Alternative**: `bridge_server.py` (Python) on port **9877** (only run one server at a time).
 - **Bridge-Client** (Linux): encrypts sessions, runs headless browser automation per request, and serves an OpenAI-compatible API on port **8000**.
 - **Server only needs to be online during login and session refresh.** Once the client has cached the encrypted session, the server can be shut down until `SESSION_TTL_HOURS` expires.
 
@@ -15,7 +15,7 @@ This guide covers configuration, API usage, and the CLI for the rebuilt bridge-c
 Copy `.env.example` to `.env` and adjust:
 
 ```env
-# Bridge-Server URL (use 9877 for server/server.js, 99876 for bridge_server.py)
+# Bridge-Server URL (default 9877 for both server.js and bridge_server.py; only run one at a time)
 BRIDGE_SERVER_URL=http://host.zerotier.my.id:9877
 PORT=8000
 ENCRYPTION_KEY=<your-fernet-key>
