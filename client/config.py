@@ -20,10 +20,12 @@ class Settings(BaseSettings):
         alias="BRIDGE_SERVER_URL",
     )
     port: int = Field(default=8000, alias="PORT")
-    host: str = Field(default="0.0.0.0", alias="HOST")
+    host: str = Field(default="127.0.0.1", alias="HOST")
     encryption_key: str = Field(default="", alias="ENCRYPTION_KEY")
     session_ttl_hours: int = Field(default=24, alias="SESSION_TTL_HOURS")
     session_refresh_interval_min: int = Field(default=60, alias="SESSION_REFRESH_INTERVAL_MIN")
+    session_sync_interval_seconds: int = Field(default=60, alias="SESSION_SYNC_INTERVAL_SECONDS")
+    account_selection_strategy: str = Field(default="round_robin", alias="ACCOUNT_SELECTION_STRATEGY")
     model_cache_ttl_min: int = Field(default=60, alias="MODEL_CACHE_TTL_MIN")
     api_key: Optional[str] = Field(default=None, alias="API_KEY")
     concurrency_limit: int = Field(default=2, alias="CONCURRENCY_LIMIT")
