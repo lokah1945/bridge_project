@@ -25,7 +25,11 @@ def _build_model_id(provider: str, model: str, modality: Optional[str] = None) -
 
 
 async def update_cache(session_manager: Optional[SessionManager] = None) -> Dict[str, Any]:
-    """Discover models from all providers and write model.json."""
+    """Discover models from all providers and write model.json.
+    
+    This function is designed to be resilient — browser failures on one provider
+    will not prevent other providers from being cached.
+    """
     session_manager = session_manager or SessionManager()
     all_models: List[Dict[str, Any]] = []
 
@@ -37,11 +41,18 @@ async def update_cache(session_manager: Optional[SessionManager] = None) -> Dict
 
     for name, provider_cls in providers_map.items():
         try:
-            session = await session_manager.get_effective_session(name)
+            # Get session first (this can fail if bridge-server is unreachable)
+            try:
+                session = await session_manager.get_effective_session(name)
+            except Exception as sess_err:
+                if settings.debug:
+                    print(f"[ModelCache] Failed to get session for {name}: {sess_err}")
+                continue
+
             adapter = provider_cls(session)
 
             if name == "arena":
-                for mod in ArenaProvider.MODALITIES.keys():
+                for mod in getattr(ArenaProvider, 'MODALITIES', {}).keys():
                     try:
                         models = await adapter.list_models(modality=mod)
                         for m in models:
@@ -70,7 +81,8 @@ async def update_cache(session_manager: Optional[SessionManager] = None) -> Dict
             await adapter.cleanup()
         except Exception as e:
             if settings.debug:
-                print(f"[ModelCache] provider '{name}' failed: {e}")
+                print(f"[ModelCache] provider '{name}' failed completely: {e}")
+            continue
 
     cache_data = {
         "last_updated": datetime.now().isoformat(),
